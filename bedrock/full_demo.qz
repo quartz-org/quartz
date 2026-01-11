@@ -1,0 +1,374 @@
+// ============================================================================
+// Bedrock - Full Feature Demo
+// Comprehensive example showcasing all Bedrock features
+// ============================================================================
+
+import bedrock;
+import system.io as io;
+import system.json as json;
+import system.convert as conv;
+import system.string as str;
+import system.time as time;
+
+io.out.println("=== Bedrock Full Feature Demo ===");
+io.out.println("");
+
+// ============================================================================
+// Application Configuration
+// ============================================================================
+
+let config = {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "backlog": 4096,
+    "maxConnections": 10000,
+    "timeout": 30000,
+    "keepAlive": true,
+    "keepAliveTimeout": 5000,
+    "tcpNoDelay": true,
+    "reuseAddr": true,
+    "maxBodySize": 10485760,
+    "verbose": false,
+    "accessLog": true
+};
+
+let app = bedrock.create(config);
+
+// ============================================================================
+// Data Store (In-Memory)
+// ============================================================================
+
+let products = {};
+let orders = {};
+let productNextId = 1;
+let orderNextId = 1;
+
+// Initialize with sample data
+products["1"] = {"id": 1, "name": "Laptop", "price": 999.99, "stock": 50};
+products["2"] = {"id": 2, "name": "Mouse", "price": 29.99, "stock": 200};
+products["3"] = {"id": 3, "name": "Keyboard", "price": 79.99, "stock": 100};
+productNextId = 4;
+
+// ============================================================================
+// Middleware: Request Logger
+// ============================================================================
+
+bedrock.use(app, (req) => {
+    let ts = time.format(time.now(), "%Y-%m-%d %H:%M:%S");
+    io.out.println(ts + " | " + req["method"] + " " + req["path"] + " | " + req["remoteAddr"]);
+    return 0;
+});
+
+// ============================================================================
+// Middleware: JSON Content-Type Check for POST/PUT
+// ============================================================================
+
+bedrock.use(app, "/api", (req) => {
+    let method = req["method"];
+    if (method == "POST" || method == "PUT") {
+        let ct = req["contentType"];
+        if (str.contains(ct, "application/json") == false && req["body"] != "") {
+            return {
+                "status": 415,
+                "body": json.stringify({"error": "Content-Type must be application/json"}),
+                "contentType": "application/json"
+            };
+        }
+    }
+    return 0;
+});
+
+// ============================================================================
+// Routes: Root & Health
+// ============================================================================
+
+bedrock.get(app, "/", (req) => {
+    let html = "<!DOCTYPE html>";
+    html = html + "<html><head><title>Bedrock API</title>";
+    html = html + "<style>body{font-family:sans-serif;max-width:800px;margin:50px auto;padding:20px}";
+    html = html + "h1{color:#333}code{background:#f4f4f4;padding:2px 6px;border-radius:3px}</style></head>";
+    html = html + "<body><h1>Bedrock API Server</h1>";
+    html = html + "<p>A high-performance, minimalist web framework for Quartz.</p>";
+    html = html + "<h2>Endpoints</h2>";
+    html = html + "<ul>";
+    html = html + "<li><code>GET /health</code> - Health check</li>";
+    html = html + "<li><code>GET /api/products</code> - List products</li>";
+    html = html + "<li><code>GET /api/products/:id</code> - Get product</li>";
+    html = html + "<li><code>POST /api/products</code> - Create product</li>";
+    html = html + "<li><code>GET /api/orders</code> - List orders</li>";
+    html = html + "<li><code>POST /api/orders</code> - Create order</li>";
+    html = html + "</ul>";
+    html = html + "<h2>Stats</h2>";
+    html = html + "<p>Visit <code>/stats</code> for server statistics.</p>";
+    html = html + "</body></html>";
+    return bedrock.response.html(html);
+});
+
+bedrock.get(app, "/health", (req) => {
+    let health = {
+        "status": "UP",
+        "timestamp": time.format(time.now(), "%Y-%m-%dT%H:%M:%SZ"),
+        "version": "1.0.0"
+    };
+    return bedrock.response.json(json.stringify(health));
+});
+
+bedrock.get(app, "/stats", (req) => {
+    let stats = bedrock.stats(app);
+    return bedrock.response.json(json.stringify(stats));
+});
+
+// ============================================================================
+// Routes: Products API
+// ============================================================================
+
+// GET /api/products - List all products
+bedrock.get(app, "/api/products", (req) => {
+    let productList = [
+        products["1"],
+        products["2"],
+        products["3"]
+    ];
+    let response = {
+        "data": productList,
+        "total": 3
+    };
+    return bedrock.response.json(json.stringify(response));
+});
+
+// GET /api/products/:id - Get single product
+bedrock.get(app, "/api/products/:id", (req) => {
+    let id = req["params"]["id"];
+    
+    let product = products[id];
+    if (product == 0) {
+        return bedrock.response.notFound("Product not found");
+    }
+    
+    return bedrock.response.json(json.stringify(product));
+});
+
+// POST /api/products - Create product
+bedrock.post(app, "/api/products", (req) => {
+    let body = req["body"];
+    if (body == "") {
+        return bedrock.response.error(400, "Request body required");
+    }
+    
+    let data = json.parse(body);
+    let id = productNextId;
+    productNextId = productNextId + 1;
+    
+    let product = {
+        "id": id,
+        "name": data["name"],
+        "price": data["price"],
+        "stock": data["stock"]
+    };
+    
+    products[conv.toString(id)] = product;
+    
+    return bedrock.response.created(
+        json.stringify(product),
+        "/api/products/" + conv.toString(id)
+    );
+});
+
+// PUT /api/products/:id - Update product
+bedrock.put(app, "/api/products/:id", (req) => {
+    let id = req["params"]["id"];
+    let body = req["body"];
+    
+    let existing = products[id];
+    if (existing == 0) {
+        return bedrock.response.notFound("Product not found");
+    }
+    
+    let data = json.parse(body);
+    
+    let product = {
+        "id": conv.toInt(id),
+        "name": data["name"],
+        "price": data["price"],
+        "stock": data["stock"]
+    };
+    
+    products[id] = product;
+    
+    return bedrock.response.json(json.stringify(product));
+});
+
+// DELETE /api/products/:id - Delete product
+bedrock.delete(app, "/api/products/:id", (req) => {
+    let id = req["params"]["id"];
+    
+    let existing = products[id];
+    if (existing == 0) {
+        return bedrock.response.notFound("Product not found");
+    }
+    
+    products[id] = 0;
+    
+    return bedrock.response.noContent();
+});
+
+// ============================================================================
+// Routes: Orders API
+// ============================================================================
+
+// GET /api/orders - List all orders
+bedrock.get(app, "/api/orders", (req) => {
+    let orderList = [];
+    let response = {
+        "data": orderList,
+        "total": 0
+    };
+    return bedrock.response.json(json.stringify(response));
+});
+
+// POST /api/orders - Create order
+bedrock.post(app, "/api/orders", (req) => {
+    let body = req["body"];
+    if (body == "") {
+        return bedrock.response.error(400, "Request body required");
+    }
+    
+    let data = json.parse(body);
+    let id = orderNextId;
+    orderNextId = orderNextId + 1;
+    
+    let order = {
+        "id": id,
+        "productId": data["productId"],
+        "quantity": data["quantity"],
+        "status": "pending",
+        "createdAt": time.format(time.now(), "%Y-%m-%dT%H:%M:%SZ")
+    };
+    
+    orders[conv.toString(id)] = order;
+    
+    return bedrock.response.created(
+        json.stringify(order),
+        "/api/orders/" + conv.toString(id)
+    );
+});
+
+// GET /api/orders/:id - Get single order
+bedrock.get(app, "/api/orders/:id", (req) => {
+    let id = req["params"]["id"];
+    
+    let order = orders[id];
+    if (order == 0) {
+        return bedrock.response.notFound("Order not found");
+    }
+    
+    return bedrock.response.json(json.stringify(order));
+});
+
+// ============================================================================
+// Routes: Search with Query Parameters
+// ============================================================================
+
+bedrock.get(app, "/api/search", (req) => {
+    let query = req["query"]["q"];
+    let limit = req["query"]["limit"];
+    
+    if (query == "") {
+        query = "*";
+    }
+    if (limit == "") {
+        limit = "10";
+    }
+    
+    let results = {
+        "query": query,
+        "limit": conv.toInt(limit),
+        "results": []
+    };
+    
+    return bedrock.response.json(json.stringify(results));
+});
+
+// ============================================================================
+// Routes: Path Parameter Patterns
+// ============================================================================
+
+// Multiple parameters
+bedrock.get(app, "/api/users/:userId/posts/:postId", (req) => {
+    let userId = req["params"]["userId"];
+    let postId = req["params"]["postId"];
+    
+    let response = {
+        "userId": userId,
+        "postId": postId,
+        "message": "User " + userId + " - Post " + postId
+    };
+    
+    return bedrock.response.json(json.stringify(response));
+});
+
+// ============================================================================
+// Error Handlers
+// ============================================================================
+
+bedrock.onNotFound(app, (req) => {
+    let error = {
+        "error": "Not Found",
+        "message": "The requested resource was not found",
+        "path": req["path"],
+        "method": req["method"],
+        "timestamp": time.format(time.now(), "%Y-%m-%dT%H:%M:%SZ")
+    };
+    return {
+        "status": 404,
+        "body": json.stringify(error),
+        "contentType": "application/json"
+    };
+});
+
+bedrock.onError(app, (req, error) => {
+    io.out.println("ERROR: " + error);
+    let response = {
+        "error": "Internal Server Error",
+        "message": error,
+        "path": req["path"],
+        "timestamp": time.format(time.now(), "%Y-%m-%dT%H:%M:%SZ")
+    };
+    return {
+        "status": 500,
+        "body": json.stringify(response),
+        "contentType": "application/json"
+    };
+});
+
+// ============================================================================
+// Start Server
+// ============================================================================
+
+io.out.println("Starting Bedrock server...");
+io.out.println("");
+bedrock.start(app);
+
+io.out.println("Server running on http://0.0.0.0:8080");
+io.out.println("");
+io.out.println("Available Endpoints:");
+io.out.println("  GET  /              - API documentation");
+io.out.println("  GET  /health        - Health check");
+io.out.println("  GET  /stats         - Server statistics");
+io.out.println("");
+io.out.println("  Products:");
+io.out.println("  GET    /api/products      - List products");
+io.out.println("  GET    /api/products/:id  - Get product");
+io.out.println("  POST   /api/products      - Create product");
+io.out.println("  PUT    /api/products/:id  - Update product");
+io.out.println("  DELETE /api/products/:id  - Delete product");
+io.out.println("");
+io.out.println("  Orders:");
+io.out.println("  GET    /api/orders        - List orders");
+io.out.println("  GET    /api/orders/:id    - Get order");
+io.out.println("  POST   /api/orders        - Create order");
+io.out.println("");
+io.out.println("  Search:");
+io.out.println("  GET    /api/search?q=term&limit=10");
+io.out.println("");
+io.out.println("Press Ctrl+C to stop");

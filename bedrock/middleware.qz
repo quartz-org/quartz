@@ -1,0 +1,171 @@
+// ============================================================================
+// Bedrock - Middleware Example
+// Demonstrates middleware composition and request processing pipeline
+// ============================================================================
+
+import bedrock;
+import system.io as io;
+import system.json as json;
+import system.time as time;
+
+io.out.println("=== Bedrock Middleware Example ===");
+io.out.println("");
+
+// Create application
+let app = bedrock.create({
+    "host": "0.0.0.0",
+    "port": 8080
+});
+
+// ============================================================================
+// Middleware 1: Request Timing
+// Logs how long each request takes
+// ============================================================================
+
+bedrock.use(app, (req) => {
+    let start = time.now();
+    io.out.println("[TIMING] Request started: " + req["path"]);
+    // Store start time for later (would use locals in full implementation)
+    return 0;  // Continue
+});
+
+// ============================================================================
+// Middleware 2: Request Logger
+// Logs all incoming requests
+// ============================================================================
+
+bedrock.use(app, (req) => {
+    let timestamp = time.format(time.now(), "%Y-%m-%d %H:%M:%S");
+    io.out.println("[" + timestamp + "] " + req["method"] + " " + req["path"]);
+    io.out.println("  Remote: " + req["remoteAddr"]);
+    io.out.println("  Host: " + req["host"]);
+    return 0;  // Continue
+});
+
+// ============================================================================
+// Middleware 3: API Authentication (for /api/* routes only)
+// ============================================================================
+
+bedrock.use(app, "/api", (req) => {
+    let authHeader = req["headers"]["authorization"];
+    
+    if (authHeader == "") {
+        io.out.println("[AUTH] No authorization header - rejecting");
+        return {
+            "status": 401,
+            "body": json.stringify({"error": "Authorization required"}),
+            "contentType": "application/json"
+        };
+    }
+    
+    // In real app, validate token here
+    io.out.println("[AUTH] Authorization header present: " + authHeader);
+    return 0;  // Continue
+});
+
+// ============================================================================
+// Middleware 4: Admin Check (for /admin/* routes only)
+// ============================================================================
+
+bedrock.use(app, "/admin", (req) => {
+    let authHeader = req["headers"]["authorization"];
+    
+    // Check for admin token
+    if (authHeader != "Bearer admin-secret") {
+        io.out.println("[ADMIN] Access denied - not admin");
+        return {
+            "status": 403,
+            "body": json.stringify({"error": "Admin access required"}),
+            "contentType": "application/json"
+        };
+    }
+    
+    io.out.println("[ADMIN] Admin access granted");
+    return 0;  // Continue
+});
+
+// ============================================================================
+// Public Routes (no auth required)
+// ============================================================================
+
+bedrock.get(app, "/", (req) => {
+    return bedrock.response.html("<h1>Public Home Page</h1><p>No auth required!</p>");
+});
+
+bedrock.get(app, "/health", (req) => {
+    return bedrock.response.json('{"status": "UP", "public": true}');
+});
+
+// ============================================================================
+// API Routes (require auth header)
+// ============================================================================
+
+bedrock.get(app, "/api/data", (req) => {
+    let data = {
+        "message": "This is protected API data",
+        "authenticated": true
+    };
+    return bedrock.response.json(json.stringify(data));
+});
+
+bedrock.get(app, "/api/profile", (req) => {
+    let profile = {
+        "name": "Authenticated User",
+        "email": "user@example.com"
+    };
+    return bedrock.response.json(json.stringify(profile));
+});
+
+// ============================================================================
+// Admin Routes (require admin auth)
+// ============================================================================
+
+bedrock.get(app, "/admin/dashboard", (req) => {
+    let dashboard = {
+        "section": "Admin Dashboard",
+        "users": 100,
+        "requests": 5000
+    };
+    return bedrock.response.json(json.stringify(dashboard));
+});
+
+bedrock.get(app, "/admin/settings", (req) => {
+    let settings = {
+        "debug": false,
+        "maxUsers": 1000,
+        "version": "1.0.0"
+    };
+    return bedrock.response.json(json.stringify(settings));
+});
+
+// ============================================================================
+// Start Server
+// ============================================================================
+
+io.out.println("Starting server with middleware pipeline...");
+bedrock.start(app);
+
+io.out.println("");
+io.out.println("Server running on http://0.0.0.0:8080");
+io.out.println("");
+io.out.println("Middleware Pipeline:");
+io.out.println("  1. Request Timing (all routes)");
+io.out.println("  2. Request Logger (all routes)");
+io.out.println("  3. API Auth (/api/* routes)");
+io.out.println("  4. Admin Check (/admin/* routes)");
+io.out.println("");
+io.out.println("Test Commands:");
+io.out.println("");
+io.out.println("  Public (no auth):");
+io.out.println("    curl http://localhost:8080/");
+io.out.println("    curl http://localhost:8080/health");
+io.out.println("");
+io.out.println("  API (requires auth header):");
+io.out.println("    curl http://localhost:8080/api/data");
+io.out.println("    curl -H 'Authorization: Bearer token' http://localhost:8080/api/data");
+io.out.println("");
+io.out.println("  Admin (requires admin token):");
+io.out.println("    curl -H 'Authorization: Bearer token' http://localhost:8080/admin/dashboard");
+io.out.println("    curl -H 'Authorization: Bearer admin-secret' http://localhost:8080/admin/dashboard");
+io.out.println("");
+io.out.println("Press Ctrl+C to stop");

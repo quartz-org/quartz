@@ -1,0 +1,128 @@
+// ============================================================================
+// Bedrock - nginx + uWSGI Production Setup
+// High-performance deployment behind nginx reverse proxy
+// ============================================================================
+
+import bedrock;
+import system.net.uwsgi as uwsgi;
+import system.io as io;
+import system.json as json;
+import system.convert as conv;
+
+io.out.println("=== Bedrock Production Server (uWSGI Mode) ===");
+io.out.println("");
+
+// ============================================================================
+// Application Setup (Same as standalone)
+// ============================================================================
+
+let products = {};
+products["1"] = {"id": 1, "name": "Laptop", "price": 999.99};
+products["2"] = {"id": 2, "name": "Mouse", "price": 29.99};
+
+// Request handler that processes Bedrock-style routing
+let handleRequest = (req) => {
+    let method = req["method"];
+    let path = req["path"];
+    
+    // GET /
+    if (method == "GET" && path == "/") {
+        return {
+            "status": 200,
+            "headers": {"Content-Type": "text/html"},
+            "body": "<h1>Bedrock + nginx</h1><p>Production ready!</p>"
+        };
+    }
+    
+    // GET /health
+    if (method == "GET" && path == "/health") {
+        return {
+            "status": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.stringify({"status": "UP", "mode": "uwsgi"})
+        };
+    }
+    
+    // GET /api/products
+    if (method == "GET" && path == "/api/products") {
+        let list = [products["1"], products["2"]];
+        return {
+            "status": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.stringify({"data": list})
+        };
+    }
+    
+    // POST /api/products
+    if (method == "POST" && path == "/api/products") {
+        let data = json.parse(req["body"]);
+        return {
+            "status": 201,
+            "headers": {
+                "Content-Type": "application/json",
+                "Location": "/api/products/new"
+            },
+            "body": json.stringify(data)
+        };
+    }
+    
+    // 404 for everything else
+    return {
+        "status": 404,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.stringify({"error": "Not Found", "path": path})
+    };
+};
+
+// ============================================================================
+// uWSGI Server Setup
+// ============================================================================
+
+// Configuration for nginx integration
+let uwsgiConfig = {
+    "socket": "/tmp/bedrock.sock",  // Unix socket for nginx
+    "backlog": 4096,
+    "maxConnections": 10000,
+    "timeout": 30000,
+    "keepAlive": true,
+    "tcpNoDelay": true,
+    "verbose": false
+};
+
+// Alternative: TCP socket for remote nginx
+// let uwsgiConfig = {
+//     "host": "127.0.0.1",
+//     "port": 3031,
+//     ...
+// };
+
+io.out.println("Creating uWSGI server...");
+let server = uwsgi.create(uwsgiConfig);
+
+// Register request handler
+uwsgi.onRequest(server, handleRequest);
+
+// Start server
+io.out.println("Starting uWSGI server...");
+uwsgi.start(server);
+
+io.out.println("");
+io.out.println("Server running on unix:/tmp/bedrock.sock");
+io.out.println("");
+io.out.println("nginx configuration:");
+io.out.println("");
+io.out.println("  upstream bedrock {");
+io.out.println("      server unix:/tmp/bedrock.sock;");
+io.out.println("  }");
+io.out.println("");
+io.out.println("  server {");
+io.out.println("      listen 80;");
+io.out.println("      server_name example.com;");
+io.out.println("");
+io.out.println("      location / {");
+io.out.println("          uwsgi_pass bedrock;");
+io.out.println("          include uwsgi_params;");
+io.out.println("      }");
+io.out.println("  }");
+io.out.println("");
+io.out.println("Press Ctrl+C to stop");

@@ -1,0 +1,6 @@
+{
+    "name": "bedrock",
+    "version": "1.0.0",
+    "author": "Quartz Team",
+    "description": "Bedrock - A minimalist, high-performance web framework for Quartz. No magic. No bloat. Just you and your code."
+}

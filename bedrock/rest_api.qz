@@ -1,0 +1,191 @@
+// ============================================================================
+// Bedrock - REST API Example
+// A complete CRUD REST API with proper HTTP semantics
+// ============================================================================
+
+import bedrock;
+import system.io as io;
+import system.json as json;
+import system.convert as conv;
+
+io.out.println("=== Bedrock REST API Example ===");
+io.out.println("");
+
+// Create application
+let app = bedrock.create({
+    "host": "0.0.0.0",
+    "port": 8080,
+    "keepAlive": true,
+    "tcpNoDelay": true
+});
+
+// In-memory data store
+let users = {};
+let nextId = 1;
+
+// Helper: Generate next ID
+let getNextId = () => {
+    let id = nextId;
+    nextId = nextId + 1;
+    return id;
+};
+
+// ============================================================================
+// Middleware: Request logging
+// ============================================================================
+
+bedrock.use(app, (req) => {
+    io.out.println("[" + req["method"] + "] " + req["path"]);
+    return 0;  // Continue to next handler
+});
+
+// ============================================================================
+// Middleware: CORS headers
+// ============================================================================
+
+bedrock.use(app, "/api", (req) => {
+    // Will add CORS headers in response
+    // For now, just continue
+    return 0;
+});
+
+// ============================================================================
+// Routes: User API
+// ============================================================================
+
+// GET /api/users - List all users
+bedrock.get(app, "/api/users", (req) => {
+    let userList = [];
+    // Note: In real Quartz, you'd iterate properly
+    // This is a simplified example
+    let response = {"users": userList, "count": 0};
+    return bedrock.response.json(json.stringify(response));
+});
+
+// GET /api/users/:id - Get single user
+bedrock.get(app, "/api/users/:id", (req) => {
+    let id = req["params"]["id"];
+    
+    // Check if user exists
+    // In real code: if (users[id] == nil)
+    // For demo, we'll return a mock user
+    
+    let user = {
+        "id": conv.toInt(id),
+        "name": "John Doe",
+        "email": "john@example.com"
+    };
+    
+    return bedrock.response.json(json.stringify(user));
+});
+
+// POST /api/users - Create new user
+bedrock.post(app, "/api/users", (req) => {
+    let body = req["body"];
+    
+    if (body == "") {
+        return bedrock.response.error(400, "Request body required");
+    }
+    
+    let data = json.parse(body);
+    let id = getNextId();
+    
+    let user = {
+        "id": id,
+        "name": data["name"],
+        "email": data["email"]
+    };
+    
+    users[conv.toString(id)] = user;
+    
+    let location = "/api/users/" + conv.toString(id);
+    return bedrock.response.created(json.stringify(user), location);
+});
+
+// PUT /api/users/:id - Update user
+bedrock.put(app, "/api/users/:id", (req) => {
+    let id = req["params"]["id"];
+    let body = req["body"];
+    
+    if (body == "") {
+        return bedrock.response.error(400, "Request body required");
+    }
+    
+    let data = json.parse(body);
+    
+    let user = {
+        "id": conv.toInt(id),
+        "name": data["name"],
+        "email": data["email"]
+    };
+    
+    users[id] = user;
+    
+    return bedrock.response.json(json.stringify(user));
+});
+
+// DELETE /api/users/:id - Delete user
+bedrock.delete(app, "/api/users/:id", (req) => {
+    let id = req["params"]["id"];
+    
+    // Remove user
+    users[id] = 0;
+    
+    return bedrock.response.noContent();
+});
+
+// ============================================================================
+// Error Handlers
+// ============================================================================
+
+// Custom 404 handler
+bedrock.onNotFound(app, (req) => {
+    let error = {
+        "error": "Not Found",
+        "path": req["path"],
+        "method": req["method"]
+    };
+    return {
+        "status": 404,
+        "body": json.stringify(error),
+        "contentType": "application/json"
+    };
+});
+
+// Custom error handler
+bedrock.onError(app, (req, error) => {
+    io.out.println("Error: " + error);
+    let response = {
+        "error": "Internal Server Error",
+        "message": error
+    };
+    return {
+        "status": 500,
+        "body": json.stringify(response),
+        "contentType": "application/json"
+    };
+});
+
+// ============================================================================
+// Start Server
+// ============================================================================
+
+io.out.println("Starting REST API server...");
+bedrock.start(app);
+
+io.out.println("");
+io.out.println("REST API running on http://0.0.0.0:8080");
+io.out.println("");
+io.out.println("Endpoints:");
+io.out.println("  GET    /api/users      - List all users");
+io.out.println("  GET    /api/users/:id  - Get user by ID");
+io.out.println("  POST   /api/users      - Create new user");
+io.out.println("  PUT    /api/users/:id  - Update user");
+io.out.println("  DELETE /api/users/:id  - Delete user");
+io.out.println("");
+io.out.println("Examples:");
+io.out.println("  curl http://localhost:8080/api/users");
+io.out.println("  curl http://localhost:8080/api/users/1");
+io.out.println("  curl -X POST -d '{\"name\":\"Alice\",\"email\":\"alice@example.com\"}' http://localhost:8080/api/users");
+io.out.println("");
+io.out.println("Press Ctrl+C to stop");
