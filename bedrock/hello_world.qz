@@ -1,0 +1,52 @@
+// ============================================================================
+// Bedrock - Hello World Example
+// The simplest possible Bedrock application
+// ============================================================================
+
+import bedrock;
+import system.io as io;
+import system.json as json;
+
+io.out.println("=== Bedrock Hello World ===");
+io.out.println("");
+
+// Create application with default settings
+let app = bedrock.create({
+    "host": "0.0.0.0",
+    "port": 8080
+});
+
+// Simple GET route
+bedrock.get(app, "/", (req) => {
+    return bedrock.response.html("<h1>Hello, World!</h1><p>Welcome to Bedrock!</p>");
+});
+
+// Health check endpoint
+bedrock.get(app, "/health", (req) => {
+    return bedrock.response.json(json.stringify({"status": "UP"}));
+});
+
+// Echo endpoint - returns request info
+bedrock.get(app, "/echo", (req) => {
+    let info = "Method: " + req["method"] + "\n";
+    info = info + "Path: " + req["path"] + "\n";
+    info = info + "Host: " + req["host"] + "\n";
+    info = info + "Remote: " + req["remoteAddr"] + "\n";
+    return bedrock.response.ok(info);
+});
+
+// Start server
+io.out.println("Starting Bedrock server...");
+bedrock.start(app);
+
+io.out.println("");
+io.out.println("Server running on http://0.0.0.0:8080");
+io.out.println("Try:");
+io.out.println("  curl http://localhost:8080/");
+io.out.println("  curl http://localhost:8080/health");
+io.out.println("  curl http://localhost:8080/echo");
+io.out.println("");
+io.out.println("Press Ctrl+C to stop");
+
+// Wait for server to stop (blocks)
+bedrock.wait(app);
