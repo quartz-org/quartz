@@ -6,6 +6,7 @@
 #include "function_registry.h"
 #include "runtime.h"
 #include "http_types.h"
+#include <algorithm>
 #include <sstream>
 
 static inline Runtime* rt() {
