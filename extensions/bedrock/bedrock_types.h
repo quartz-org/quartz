@@ -617,7 +617,7 @@ private:
     void executeHandlers(Context& ctx, const std::vector<Handler>& handlers, size_t index);
     
     // Mutex to protect Quartz VM execution (as it's not thread-safe)
-    std::mutex executeMutex_;
+    std::recursive_mutex executeMutex_;
     
     static std::atomic<uint64_t> nextId_;
 };

@@ -561,6 +561,9 @@ void Application::executeHandlers(Context& ctx, const std::vector<Handler>& hand
         return;
     }
     
+    // Lock for Quartz VM safety
+    std::lock_guard<std::recursive_mutex> lock(executeMutex_);
+    
     try {
         handlers[index](ctx, [this, &ctx, &handlers, index]() {
             executeHandlers(ctx, handlers, index + 1);
@@ -575,8 +578,6 @@ void Application::executeHandlers(Context& ctx, const std::vector<Handler>& hand
 }
 
 Response Application::handleRequest(Request& req) {
-    std::lock_guard<std::mutex> lock(executeMutex_);
-    
     Context ctx;
     ctx.req = std::move(req);
     

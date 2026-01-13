@@ -176,6 +176,9 @@ public:
     // Poll for events, returns number of ready sockets
     int poll(int timeoutMs);
     
+    // Wake up the poll() call
+    void wakeup();
+    
     // Get events after poll
     const std::vector<IOEvent>& events() const { return readyEvents_; }
     
@@ -185,9 +188,11 @@ private:
     
 #ifdef QZ_PLATFORM_LINUX
     int epollFd_ = -1;
+    int wakeupFd_ = -1;
     std::vector<struct epoll_event> epollEvents_;
 #elif defined(QZ_PLATFORM_MACOS)
     int kqueueFd_ = -1;
+    int wakeupPipe_[2] = {-1, -1};
     std::vector<struct kevent> kqueueEvents_;
     std::unordered_map<socket_t, uint32_t> fdEvents_;
 #elif defined(QZ_PLATFORM_WINDOWS)
