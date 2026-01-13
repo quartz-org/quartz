@@ -214,6 +214,20 @@ bool AsyncConnection::parseRequest() {
     request_.rawPath = requestLine.substr(p1 + 1, p2 - p1 - 1);
     request_.protocol = requestLine.substr(p2 + 1);
     
+    // Parse path and query string from rawPath
+    size_t qPos = request_.rawPath.find('?');
+    if (qPos != std::string_view::npos) {
+        std::string_view pathPart = request_.rawPath.substr(0, qPos);
+        request_.queryString = request_.rawPath.substr(qPos + 1);
+        // Normalize and store path (storeString returns stable string_view)
+        request_.path = request_.storeString(normalizePath(pathPart));
+        // Parse query parameters
+        request_.query = parseQueryString(request_.queryString);
+    } else {
+        // No query string, just normalize the path
+        request_.path = request_.storeString(normalizePath(request_.rawPath));
+    }
+    
     // Parse headers - optimized vector-based parsing
     std::string_view headersPart = headerSection.substr(firstLineEnd + 2);
     size_t lineStart = 0;

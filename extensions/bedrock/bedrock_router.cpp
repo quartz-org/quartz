@@ -839,9 +839,11 @@ bool Router::findRoute(HttpMethod method, std::string_view path,
         }
     }
     
-    // Use Radix Tree for fast lookup of own routes
+    // Try Radix Tree for fast lookup first
     RadixNode* current = &radixRoot_;
     size_t start = 0;
+    bool radixFailed = false;
+    std::unordered_map<std::string, std::string> radixParams;
     
     while (start < path.size()) {
         if (path[start] == '/') { start++; continue; }
@@ -854,20 +856,36 @@ bool Router::findRoute(HttpMethod method, std::string_view path,
         if (it != current->staticChildren.end()) {
             current = it->second.get();
         } else if (current->paramChild) {
-            outParams[current->paramName] = std::string(seg);
+            radixParams[current->paramName] = std::string(seg);
             current = current->paramChild.get();
         } else if (current->wildcardChild) {
             current = current->wildcardChild.get();
         } else {
-            return false;
+            radixFailed = true;
+            break;
         }
         
         start = end;
     }
     
-    if (current->route && (current->route->method == HttpMethod::ANY || current->route->method == method)) {
+    // Check if radix tree found a match
+    if (!radixFailed && current->route && 
+        (current->route->method == HttpMethod::ANY || current->route->method == method)) {
         outRoute = current->route;
+        outParams = std::move(radixParams);
         return true;
+    }
+    
+    // Fallback to regex-based matching for routes that radix tree couldn't handle
+    // This handles complex patterns, regex constraints, and edge cases
+    std::string pathStr(path);
+    for (auto& route : routes_) {
+        std::unordered_map<std::string, std::string> params;
+        if (route.matches(method, pathStr, params)) {
+            outRoute = &route;
+            outParams = std::move(params);
+            return true;
+        }
     }
     
     return false;

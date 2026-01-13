@@ -149,13 +149,14 @@ size_t HttpParser::feed(const char* data, size_t length) {
                             request_.protocol = protoLine;
                             
                             // Parse path and query string
+                            // Use storeString to get stable string_view from normalized path
                             size_t qPos = request_.rawPath.find('?');
                             if (qPos != std::string::npos) {
-                                request_.path = normalizePath(request_.rawPath.substr(0, qPos));
+                                request_.path = request_.storeString(normalizePath(request_.rawPath.substr(0, qPos)));
                                 request_.queryString = request_.rawPath.substr(qPos + 1);
                                 request_.query = parseQueryString(request_.queryString);
                             } else {
-                                request_.path = normalizePath(request_.rawPath);
+                                request_.path = request_.storeString(normalizePath(request_.rawPath));
                             }
                             
                             state_ = State::HEADERS;
