@@ -18,9 +18,10 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
-#include <functional>
-#include <atomic>
 #include <mutex>
+#include <atomic>
+#include <thread>
+#include <functional>
 #include <regex>
 #include <chrono>
 #include <optional>
@@ -533,7 +534,8 @@ std::string getExtension(const std::string& path);
 // Application Class Declaration
 // ============================================================================
 
-class Connection;  // Forward declaration
+class Connection;     // Forward declaration
+class AsyncServer;    // Forward declaration for high-performance async server
 
 class Application {
 public:
@@ -599,6 +601,10 @@ private:
     std::thread acceptThread_;
     std::vector<std::thread> workerThreads_;
     
+    // Async server for high-performance mode (uses event loop + worker pool)
+    std::unique_ptr<AsyncServer> asyncServer_;
+    bool useAsyncMode_ = true;  // Default to async mode for best performance
+    
     // Handlers
     ErrorHandler errorHandler_;
     Handler notFoundHandler_;
@@ -609,6 +615,9 @@ private:
     void acceptLoop();
     void handleConnection(std::unique_ptr<Connection> conn);
     void executeHandlers(Context& ctx, const std::vector<Handler>& handlers, size_t index);
+    
+    // Mutex to protect Quartz VM execution (as it's not thread-safe)
+    std::mutex executeMutex_;
     
     static std::atomic<uint64_t> nextId_;
 };

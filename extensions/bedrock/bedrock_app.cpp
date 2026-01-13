@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include "bedrock_types.h"
+#include "bedrock_async.h"
 #include <algorithm>
 #include <sstream>
 #include <cstring>
@@ -574,6 +575,8 @@ void Application::executeHandlers(Context& ctx, const std::vector<Handler>& hand
 }
 
 Response Application::handleRequest(Request& req) {
+    std::lock_guard<std::mutex> lock(executeMutex_);
+    
     Context ctx;
     ctx.req = std::move(req);
     
@@ -629,7 +632,29 @@ bool Application::start() {
         return false;
     }
     
-    std::cerr << "[bedrock] Creating socket on " << config_.host << ":" << config_.port << std::endl;
+    stats_.reset();
+    
+    // Use high-performance async mode by default
+    if (useAsyncMode_) {
+        std::cerr << "[bedrock] Starting in HIGH-PERFORMANCE async mode on " 
+                  << config_.host << ":" << config_.port << std::endl;
+        
+        asyncServer_ = std::make_unique<AsyncServer>(this);
+        if (asyncServer_->start()) {
+            running_ = true;
+            shouldStop_ = false;
+            std::cerr << "[bedrock] Async server started successfully" << std::endl;
+            return true;
+        } else {
+            std::cerr << "[bedrock] Async mode failed, falling back to blocking mode" << std::endl;
+            asyncServer_.reset();
+            useAsyncMode_ = false;
+        }
+    }
+    
+    // Fallback to blocking mode (legacy)
+    std::cerr << "[bedrock] Starting in blocking mode on " 
+              << config_.host << ":" << config_.port << std::endl;
     
     if (!createSocket()) {
         std::cerr << "[bedrock] Failed to create socket: " << strerror(errno) << std::endl;
@@ -640,12 +665,11 @@ bool Application::start() {
     
     shouldStop_ = false;
     running_ = true;
-    stats_.reset();
     
-    // Start accept thread
+    // Start accept thread (blocking mode)
     acceptThread_ = std::thread(&Application::acceptLoop, this);
     
-    std::cerr << "[bedrock] Accept thread started" << std::endl;
+    std::cerr << "[bedrock] Accept thread started (blocking mode)" << std::endl;
     
     return true;
 }
@@ -655,13 +679,19 @@ void Application::stop() {
     
     shouldStop_ = true;
     
-    // Close server socket to unblock accept
+    // Stop async server if running
+    if (asyncServer_) {
+        asyncServer_->stop();
+        asyncServer_.reset();
+    }
+    
+    // Close server socket to unblock accept (blocking mode)
     if (serverSocket_ != INVALID_SOCKET_VALUE) {
         close_socket(serverSocket_);
         serverSocket_ = INVALID_SOCKET_VALUE;
     }
     
-    // Wait for accept thread
+    // Wait for accept thread (blocking mode)
     if (acceptThread_.joinable()) {
         acceptThread_.join();
     }
@@ -670,6 +700,15 @@ void Application::stop() {
 }
 
 void Application::wait() {
+    // In async mode, just block until stop is called
+    if (asyncServer_) {
+        while (running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return;
+    }
+    
+    // In blocking mode, wait for accept thread
     if (acceptThread_.joinable()) {
         acceptThread_.join();
     }

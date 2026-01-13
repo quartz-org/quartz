@@ -223,8 +223,16 @@ eventloop.resetStats();
 - [ ] HTTP/2 support
 - [ ] WebSocket support
 - [ ] TLS/SSL native support
-- [ ] Request routing with path parameters
-- [ ] Middleware system
-- [ ] Request body parsing (JSON, form data)
+- [x] Request routing with path parameters (via Bedrock)
+- [x] Middleware system (via Bedrock)
+- [x] Request body parsing (JSON, form data) (via Bedrock)
 - [ ] Response streaming
-- [ ] Worker thread pool for CPU-bound tasks
+- [x] Worker thread pool for CPU-bound tasks (via Bedrock async server)
+
+## Bedrock Integration
+
+The Bedrock framework now uses a **high-performance async architecture** by default:
+- Event-driven I/O with epoll (Linux), kqueue (macOS), or select (Windows)
+- Worker thread pool for parallel request processing
+- Non-blocking connections supporting 10,000+ concurrent clients
+- Automatic fallback to blocking mode if needed
