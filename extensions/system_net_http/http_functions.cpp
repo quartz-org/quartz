@@ -7,6 +7,7 @@
 #include "runtime.h"
 #include "http_types.h"
 #include <sstream>
+#include <algorithm>
 
 static inline Runtime* rt() {
     return global_runtime_ptr;

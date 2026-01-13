@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <optional>
 #include <immintrin.h>
+#include <cstdint>
 
 namespace qz_data {
 
