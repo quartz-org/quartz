@@ -1,0 +1,18 @@
+import bedrock;
+
+var app = bedrock.create();
+
+bedrock.get(app, "/fast", (req) => {
+    // Current compiler will now emit BR_RESPONSE_HTML
+    return bedrock.response.html("<h1>Fast!</h1>");
+});
+
+bedrock.get(app, "/req", (req) => {
+    // Current compiler will now emit BR_GET_FIELD_SLOT for req["method"]
+    var m = req["method"];
+    var p = req["path"];
+    return bedrock.response.ok(m + " " + p);
+});
+
+bedrock.start(app, 8080);
+bedrock.wait(app);

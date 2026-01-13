@@ -15,8 +15,10 @@
 #define BEDROCK_TYPES_H
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <unordered_map>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -26,8 +28,8 @@
 #include <chrono>
 #include <optional>
 #include <queue>
-#include <thread>
 #include <condition_variable>
+#include "bedrock_buffer.h"
 
 // Platform detection
 #if defined(_WIN32) || defined(_WIN64)
@@ -107,7 +109,7 @@ inline std::string methodToString(HttpMethod m) {
     }
 }
 
-inline HttpMethod stringToMethod(const std::string& s) {
+inline HttpMethod stringToMethod(std::string_view s) {
     if (s == "GET")     return HttpMethod::GET;
     if (s == "POST")    return HttpMethod::POST;
     if (s == "PUT")     return HttpMethod::PUT;
@@ -126,34 +128,51 @@ inline HttpMethod stringToMethod(const std::string& s) {
 // ============================================================================
 
 struct Request {
-    // Core HTTP fields
+    // Core HTTP fields (Zero-copy)
     HttpMethod method = HttpMethod::GET;
-    std::string methodStr;
-    std::string path;
-    std::string rawPath;  // Original path before normalization
-    std::string queryString;
-    std::string protocol = "HTTP/1.1";
+    std::string_view methodStr;
+    std::string_view path;
+    std::string_view rawPath;
+    std::string_view queryString;
+    std::string_view protocol = "HTTP/1.1";
     
-    // Headers (lowercase keys for consistency)
-    std::unordered_map<std::string, std::string> headers;
+    // Headers (Vector-based for zero allocations during parsing)
+    struct Header {
+        std::string_view name;
+        std::string_view value;
+    };
+    std::vector<Header> headers;
     
-    // Body
-    std::string body;
+    // Body (Zero-copy)
+    std::string_view body;
     size_t contentLength = 0;
-    std::string contentType;
+    std::string_view contentType;
     
-    // Connection info
+    // Connection info (Persistent)
     std::string remoteAddr;
     int remotePort = 0;
-    std::string host;
+    std::string_view host;
     
-    // Parsed data
+    // Parsed data (Allocations only when needed)
     std::unordered_map<std::string, std::string> params;      // Route parameters (:id, :name)
     std::unordered_map<std::string, std::string> query;       // Query string parameters
     std::unordered_map<std::string, std::string> cookies;     // Parsed cookies
     
-    // Request-scoped storage (for middleware to pass data)
+    // Request-scoped storage
     std::unordered_map<std::string, std::string> locals;
+    
+    // The underlying buffer (kept alive until request is handled)
+    std::shared_ptr<IOBuffer> buffer;
+    
+    // Stable storage for strings when not using buffer
+    std::shared_ptr<std::deque<std::string>> stringStorage;
+    
+    // Helper to store string and get view
+    std::string_view storeString(const std::string& s) {
+        if (!stringStorage) stringStorage = std::make_shared<std::deque<std::string>>();
+        stringStorage->push_back(s);
+        return stringStorage->back();
+    }
     
     // Timing
     std::chrono::steady_clock::time_point startTime;
@@ -161,7 +180,7 @@ struct Request {
     Request() : startTime(std::chrono::steady_clock::now()) {}
     
     // Get header (case-insensitive)
-    std::string getHeader(const std::string& name) const;
+    std::string_view getHeader(std::string_view name) const;
     
     // Get parameter (route param, then query param)
     std::string getParam(const std::string& name) const;
@@ -225,8 +244,15 @@ struct Response {
     Response& serverError(const std::string& message = "Internal Server Error");
     Response& noContent();
     
-    // Build HTTP response string
+    // Build HTTP response string (DEPRECATED: Use buildIov for writev)
     std::string build() const;
+
+    // For Scatter/Gather I/O (writev)
+    struct BufferView {
+        const char* data;
+        size_t len;
+    };
+    std::vector<BufferView> buildIov() const;
     
     // Factory methods for quick responses
     static Response ok(const std::string& body = "", const std::string& contentType = "text/plain");
@@ -311,7 +337,7 @@ public:
     // Get param (shorthand)
     std::string param(const std::string& name) const { return req.getParam(name); }
     std::string query(const std::string& name) const { return req.getQuery(name); }
-    std::string header(const std::string& name) const { return req.getHeader(name); }
+    std::string_view header(std::string_view name) const { return req.getHeader(name); }
 };
 
 // ============================================================================
@@ -363,7 +389,7 @@ public:
     const std::string& getPrefix() const { return prefix_; }
     
     // Find matching route
-    bool findRoute(HttpMethod method, const std::string& path,
+    bool findRoute(HttpMethod method, std::string_view path,
                    Route*& outRoute, std::unordered_map<std::string, std::string>& outParams);
     
     // Get all routes (for debugging/documentation)
@@ -380,6 +406,28 @@ private:
     std::vector<Route> routes_;
     std::vector<std::pair<std::string, Handler>> middleware_;  // (path prefix, handler)
     std::vector<std::pair<std::string, std::shared_ptr<Router>>> subRouters_;
+    
+    // Low-level Radix Tree for high-performance matching
+    struct RadixNode {
+        std::string segment;
+        std::unordered_map<std::string, std::unique_ptr<RadixNode>> staticChildren;
+        std::unique_ptr<RadixNode> paramChild;
+        std::string paramName;
+        std::unique_ptr<RadixNode> wildcardChild;
+        Route* route = nullptr;
+        
+        RadixNode* getOrCreateStatic(std::string_view seg) {
+            std::string s(seg);
+            if (staticChildren.find(s) == staticChildren.end()) {
+                staticChildren[s] = std::make_unique<RadixNode>();
+                staticChildren[s]->segment = s;
+            }
+            return staticChildren[s].get();
+        }
+    };
+    
+    RadixNode radixRoot_;
+    void addToRadix(Route& route);
     
     void addRoute(HttpMethod method, const std::string& path, Handler handler, const std::string& name = "");
 };
@@ -498,16 +546,16 @@ struct CorsOptions {
 // ============================================================================
 
 // URL decode
-std::string urlDecode(const std::string& encoded);
+std::string urlDecode(std::string_view encoded);
 
 // URL encode
-std::string urlEncode(const std::string& str);
+std::string urlEncode(std::string_view str);
 
 // Parse query string
-std::unordered_map<std::string, std::string> parseQueryString(const std::string& query);
+std::unordered_map<std::string, std::string> parseQueryString(std::string_view query);
 
 // Parse cookies
-std::unordered_map<std::string, std::string> parseCookies(const std::string& cookieHeader);
+std::unordered_map<std::string, std::string> parseCookies(std::string_view cookieHeader);
 
 // Get MIME type for file extension
 std::string getMimeType(const std::string& extension);
@@ -516,10 +564,10 @@ std::string getMimeType(const std::string& extension);
 std::string getStatusText(int code);
 
 // Normalize path (remove .., resolve /)
-std::string normalizePath(const std::string& path);
+std::string normalizePath(std::string_view path);
 
 // Path join
-std::string pathJoin(const std::string& base, const std::string& path);
+std::string pathJoin(std::string_view base, std::string_view path);
 
 // File exists
 bool fileExists(const std::string& path);
