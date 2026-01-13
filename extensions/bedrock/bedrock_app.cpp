@@ -48,7 +48,7 @@ public:
     bool hasError() const { return state_ == State::ERROR; }
     
     // Get parsed request (valid when isComplete())
-    Request& getRequest() { return request_; }
+    Request& getRequest();
     
     // Reset parser for next request
     void reset();
@@ -60,6 +60,10 @@ private:
     size_t contentLength_;
     size_t bodyRead_;
     
+    // Storage for zero-copy views in blocking mode
+    std::string bodyStorage_;
+    std::vector<std::pair<std::string, std::string>> headerStorage_;
+    
     bool parseRequestLine();
     bool parseHeaders();
 };
@@ -68,8 +72,24 @@ void HttpParser::reset() {
     state_ = State::REQUEST_LINE;
     request_ = Request();
     buffer_.clear();
+    bodyStorage_.clear();
+    headerStorage_.clear();
     contentLength_ = 0;
     bodyRead_ = 0;
+}
+
+Request& HttpParser::getRequest() {
+    // Populate views from storage before returning
+    request_.body = bodyStorage_;
+    request_.headers.clear();
+    for (const auto& h : headerStorage_) {
+        request_.headers.push_back({h.first, h.second});
+    }
+    
+    // Find host in headers for request_.host
+    request_.host = request_.getHeader("Host");
+    
+    return request_;
 }
 
 size_t HttpParser::feed(const char* data, size_t length) {
@@ -84,7 +104,7 @@ size_t HttpParser::feed(const char* data, size_t length) {
             // Read body data directly
             size_t remaining = contentLength_ - bodyRead_;
             size_t toRead = std::min(remaining, length - consumed);
-            request_.body.append(data + consumed, toRead);
+            bodyStorage_.append(data + consumed, toRead);
             bodyRead_ += toRead;
             consumed += toRead;
             
@@ -113,10 +133,20 @@ size_t HttpParser::feed(const char* data, size_t length) {
                         size_t pos2 = line.rfind(' ');
                         
                         if (pos1 != std::string::npos && pos2 != std::string::npos && pos1 != pos2) {
-                            request_.methodStr = line.substr(0, pos1);
+                            request_.methodStr = ""; // We'll set this later if needed, or point to line storage
+                            // For simplicity in legacy parser, we just use a persistent string
+                            static thread_local std::string methodLine;
+                            methodLine = line.substr(0, pos1);
+                            request_.methodStr = methodLine;
                             request_.method = stringToMethod(request_.methodStr);
-                            request_.rawPath = line.substr(pos1 + 1, pos2 - pos1 - 1);
-                            request_.protocol = line.substr(pos2 + 1);
+                            
+                            static thread_local std::string pathLine;
+                            pathLine = line.substr(pos1 + 1, pos2 - pos1 - 1);
+                            request_.rawPath = pathLine;
+                            
+                            static thread_local std::string protoLine;
+                            protoLine = line.substr(pos2 + 1);
+                            request_.protocol = protoLine;
                             
                             // Parse path and query string
                             size_t qPos = request_.rawPath.find('?');
@@ -138,37 +168,24 @@ size_t HttpParser::feed(const char* data, size_t length) {
                 case State::HEADERS:
                     if (line.empty()) {
                         // End of headers
-                        // Parse Content-Length
-                        auto clIt = request_.headers.find("content-length");
-                        if (clIt != request_.headers.end()) {
-                            try {
-                                contentLength_ = std::stoull(clIt->second);
-                                request_.contentLength = contentLength_;
-                            } catch (...) {
-                                contentLength_ = 0;
+                        // Parse Content-Length from headerStorage_
+                        for (const auto& h : headerStorage_) {
+                            if (h.first == "content-length") {
+                                try {
+                                    contentLength_ = std::stoull(h.second);
+                                    request_.contentLength = contentLength_;
+                                } catch (...) {
+                                    contentLength_ = 0;
+                                }
+                            } else if (h.first == "content-type") {
+                                request_.contentType = h.second;
+                            } else if (h.first == "cookie") {
+                                request_.cookies = parseCookies(h.second);
                             }
                         }
                         
-                        // Parse Content-Type
-                        auto ctIt = request_.headers.find("content-type");
-                        if (ctIt != request_.headers.end()) {
-                            request_.contentType = ctIt->second;
-                        }
-                        
-                        // Parse Host
-                        auto hostIt = request_.headers.find("host");
-                        if (hostIt != request_.headers.end()) {
-                            request_.host = hostIt->second;
-                        }
-                        
-                        // Parse Cookies
-                        auto cookieIt = request_.headers.find("cookie");
-                        if (cookieIt != request_.headers.end()) {
-                            request_.cookies = parseCookies(cookieIt->second);
-                        }
-                        
                         if (contentLength_ > 0) {
-                            request_.body.reserve(contentLength_);
+                            bodyStorage_.reserve(contentLength_);
                             state_ = State::BODY;
                         } else {
                             state_ = State::COMPLETE;
@@ -188,7 +205,7 @@ size_t HttpParser::feed(const char* data, size_t length) {
                             
                             // Store with lowercase key
                             std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-                            request_.headers[name] = value;
+                            headerStorage_.push_back({name, value});
                         }
                     }
                     break;
@@ -312,7 +329,7 @@ Application::Application(const std::string& name)
     
     // Default not found handler
     notFoundHandler_ = [](Context& ctx, NextFn next) {
-        ctx.res.notFound("Not Found: " + ctx.req.path);
+        ctx.res.notFound("Not Found: " + std::string(ctx.req.path));
     };
     
     // Default error handler
@@ -530,7 +547,7 @@ void Application::handleConnection(std::unique_ptr<Connection> conn) {
         }
         
         // Check keep-alive
-        std::string connHeader = req.getHeader("Connection");
+        std::string connHeader(req.getHeader("Connection"));
         std::transform(connHeader.begin(), connHeader.end(), connHeader.begin(), ::tolower);
         
         if (connHeader == "close" || !config_.enableKeepAlive) {

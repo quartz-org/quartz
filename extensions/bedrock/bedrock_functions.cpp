@@ -99,22 +99,22 @@ static Value buildRequestDict(const Request& req, Runtime* runtime) {
     std::unordered_map<std::string, Value> dict;
     
     dict["method"] = Value(methodToString(req.method));
-    dict["path"] = Value(req.path);
-    dict["rawPath"] = Value(req.rawPath);
-    dict["queryString"] = Value(req.queryString);
-    dict["protocol"] = Value(req.protocol);
-    dict["host"] = Value(req.host);
+    dict["path"] = Value(std::string(req.path));
+    dict["rawPath"] = Value(std::string(req.rawPath));
+    dict["queryString"] = Value(std::string(req.queryString));
+    dict["protocol"] = Value(std::string(req.protocol));
+    dict["host"] = Value(std::string(req.host));
     dict["remoteAddr"] = Value(req.remoteAddr);
     dict["remotePort"] = Value(req.remotePort);
-    dict["contentType"] = Value(req.contentType);
+    dict["contentType"] = Value(std::string(req.contentType));
     dict["contentLength"] = Value(static_cast<int>(req.contentLength));
-    dict["body"] = Value(req.body);
+    dict["body"] = Value(std::string(req.body));
     dict["elapsedMs"] = Value(static_cast<int>(req.elapsedMs()));
     
     // Headers as nested dict
     std::unordered_map<std::string, Value> headersDict;
-    for (const auto& [key, value] : req.headers) {
-        headersDict[key] = Value(value);
+    for (const auto& h : req.headers) {
+        headersDict[std::string(h.name)] = Value(std::string(h.value));
     }
     dict["headers"] = runtime->makeDict(std::move(headersDict));
     

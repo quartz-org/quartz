@@ -19,14 +19,15 @@ namespace bedrock {
 // URL Encoding/Decoding
 // ============================================================================
 
-std::string urlDecode(const std::string& encoded) {
+std::string urlDecode(std::string_view encoded) {
     std::string result;
     result.reserve(encoded.size());
     
     for (size_t i = 0; i < encoded.size(); ++i) {
         if (encoded[i] == '%' && i + 2 < encoded.size()) {
             int value;
-            std::istringstream iss(encoded.substr(i + 1, 2));
+            std::string temp(encoded.substr(i + 1, 2));
+            std::istringstream iss(temp);
             if (iss >> std::hex >> value) {
                 result += static_cast<char>(value);
                 i += 2;
@@ -41,7 +42,7 @@ std::string urlDecode(const std::string& encoded) {
     return result;
 }
 
-std::string urlEncode(const std::string& str) {
+std::string urlEncode(std::string_view str) {
     std::ostringstream encoded;
     encoded.fill('0');
     encoded << std::hex;
@@ -56,45 +57,53 @@ std::string urlEncode(const std::string& str) {
     return encoded.str();
 }
 
-std::unordered_map<std::string, std::string> parseQueryString(const std::string& query) {
+std::unordered_map<std::string, std::string> parseQueryString(std::string_view query) {
     std::unordered_map<std::string, std::string> result;
     if (query.empty()) return result;
     
-    std::istringstream stream(query);
-    std::string pair;
-    
-    while (std::getline(stream, pair, '&')) {
+    size_t start = 0;
+    while (start < query.size()) {
+        size_t end = query.find('&', start);
+        if (end == std::string_view::npos) end = query.size();
+        
+        std::string_view pair = query.substr(start, end - start);
         size_t eqPos = pair.find('=');
-        if (eqPos != std::string::npos) {
+        if (eqPos != std::string_view::npos) {
             std::string key = urlDecode(pair.substr(0, eqPos));
             std::string value = urlDecode(pair.substr(eqPos + 1));
             result[key] = value;
         } else if (!pair.empty()) {
             result[urlDecode(pair)] = "";
         }
+        
+        start = end + 1;
     }
     return result;
 }
 
-std::unordered_map<std::string, std::string> parseCookies(const std::string& cookieHeader) {
+std::unordered_map<std::string, std::string> parseCookies(std::string_view cookieHeader) {
     std::unordered_map<std::string, std::string> result;
     if (cookieHeader.empty()) return result;
     
-    std::istringstream stream(cookieHeader);
-    std::string pair;
-    
-    while (std::getline(stream, pair, ';')) {
-        // Trim leading whitespace
-        size_t start = pair.find_first_not_of(" \t");
-        if (start == std::string::npos) continue;
-        pair = pair.substr(start);
+    size_t start = 0;
+    while (start < cookieHeader.size()) {
+        size_t end = cookieHeader.find(';', start);
+        if (end == std::string_view::npos) end = cookieHeader.size();
         
-        size_t eqPos = pair.find('=');
-        if (eqPos != std::string::npos) {
-            std::string key = pair.substr(0, eqPos);
-            std::string value = pair.substr(eqPos + 1);
-            result[key] = value;
+        std::string_view pair = cookieHeader.substr(start, end - start);
+        // Trim leading whitespace
+        size_t vstart = pair.find_first_not_of(" \t");
+        if (vstart != std::string_view::npos) {
+            pair = pair.substr(vstart);
+            size_t eqPos = pair.find('=');
+            if (eqPos != std::string_view::npos) {
+                std::string key(pair.substr(0, eqPos));
+                std::string value(pair.substr(eqPos + 1));
+                result[key] = value;
+            }
         }
+        
+        start = end + 1;
     }
     return result;
 }
@@ -188,44 +197,58 @@ std::string getStatusText(int code) {
     }
 }
 
-std::string normalizePath(const std::string& path) {
+std::string normalizePath(std::string_view path) {
     if (path.empty() || path == "/") return "/";
     
-    std::vector<std::string> segments;
-    std::istringstream stream(path);
-    std::string segment;
-    
-    while (std::getline(stream, segment, '/')) {
-        if (segment.empty() || segment == ".") continue;
-        if (segment == "..") {
+    std::vector<std::string_view> segments;
+    size_t start = 0;
+    while (start < path.size()) {
+        if (path[start] == '/') { start++; continue; }
+        size_t end = path.find('/', start);
+        if (end == std::string_view::npos) end = path.size();
+        
+        std::string_view segment = path.substr(start, end - start);
+        if (segment == ".") {
+            // Skip
+        } else if (segment == "..") {
             if (!segments.empty()) segments.pop_back();
-        } else {
+        } else if (!segment.empty()) {
             segments.push_back(segment);
         }
+        
+        start = end;
     }
     
     std::string result = "/";
     for (size_t i = 0; i < segments.size(); ++i) {
-        result += segments[i];
+        result.append(segments[i].data(), segments[i].size());
         if (i < segments.size() - 1) result += "/";
     }
     
     return result;
 }
 
-std::string pathJoin(const std::string& base, const std::string& path) {
-    if (base.empty()) return path;
-    if (path.empty()) return base;
+std::string pathJoin(std::string_view base, std::string_view path) {
+    if (base.empty()) return std::string(path);
+    if (path.empty()) return std::string(base);
     
     bool baseHasSlash = base.back() == '/';
     bool pathHasSlash = path.front() == '/';
     
+    std::string result;
+    result.reserve(base.size() + path.size() + 1);
+    result.append(base.data(), base.size());
+    
     if (baseHasSlash && pathHasSlash) {
-        return base + path.substr(1);
+        result.pop_back();
+        result.append(path.data(), path.size());
     } else if (!baseHasSlash && !pathHasSlash) {
-        return base + "/" + path;
+        result += "/";
+        result.append(path.data(), path.size());
+    } else {
+        result.append(path.data(), path.size());
     }
-    return base + path;
+    return result;
 }
 
 bool fileExists(const std::string& path) {
@@ -259,14 +282,19 @@ std::string getExtension(const std::string& path) {
 // Request Implementation
 // ============================================================================
 
-std::string Request::getHeader(const std::string& name) const {
-    std::string lowerName = name;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-    
-    for (const auto& [key, value] : headers) {
-        std::string lowerKey = key;
-        std::transform(lowerKey.begin(), lowerKey.end(), lowerKey.begin(), ::tolower);
-        if (lowerKey == lowerName) return value;
+std::string_view Request::getHeader(std::string_view name) const {
+    for (const auto& header : headers) {
+        if (header.name.size() == name.size()) {
+            // Case-insensitive comparison
+            bool match = true;
+            for (size_t i = 0; i < name.size(); ++i) {
+                if (std::tolower(header.name[i]) != std::tolower(name[i])) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return header.value;
+        }
     }
     return "";
 }
@@ -306,15 +334,15 @@ int64_t Request::elapsedMs() const {
 }
 
 bool Request::isJson() const {
-    return contentType.find("application/json") != std::string::npos;
+    return contentType.find("application/json") != std::string_view::npos;
 }
 
 bool Request::isForm() const {
-    return contentType.find("application/x-www-form-urlencoded") != std::string::npos;
+    return contentType.find("application/x-www-form-urlencoded") != std::string_view::npos;
 }
 
 bool Request::isMultipart() const {
-    return contentType.find("multipart/form-data") != std::string::npos;
+    return contentType.find("multipart/form-data") != std::string_view::npos;
 }
 
 // ============================================================================
@@ -428,35 +456,62 @@ Response& Response::noContent() {
 }
 
 std::string Response::build() const {
-    std::ostringstream ss;
+    auto iov = buildIov();
+    std::string result;
+    size_t total = 0;
+    for (const auto& v : iov) total += v.len;
+    result.reserve(total);
+    for (const auto& v : iov) result.append(v.data, v.len);
+    return result;
+}
+
+std::vector<Response::BufferView> Response::buildIov() const {
+    std::vector<BufferView> iov;
     
-    // Status line
-    ss << "HTTP/1.1 " << statusCode << " " << statusText << "\r\n";
+    // We need some static strings for fixed parts of the response
+    // In a real high-perf server, these would be pre-allocated or shared.
+    // For now, we build the header portion in a string and return a view of it.
+    // POTENTIAL ISSUE: Life cycle of the header string.
+    // Let's use a thread-local or member-owned buffer for headers.
     
-    // Headers
+    static thread_local std::string headerBuffer;
+    headerBuffer.clear();
+    headerBuffer.reserve(512);
+
+    headerBuffer += "HTTP/1.1 ";
+    headerBuffer += std::to_string(statusCode);
+    headerBuffer += " ";
+    headerBuffer += statusText;
+    headerBuffer += "\r\n";
+    
     for (const auto& [name, value] : headers) {
-        ss << name << ": " << value << "\r\n";
+        headerBuffer += name;
+        headerBuffer += ": ";
+        headerBuffer += value;
+        headerBuffer += "\r\n";
     }
     
-    // Add Content-Length if not present and we have a body
     if (headers.find("Content-Length") == headers.end() && !body.empty()) {
-        ss << "Content-Length: " << body.size() << "\r\n";
+        headerBuffer += "Content-Length: ";
+        headerBuffer += std::to_string(body.size());
+        headerBuffer += "\r\n";
     }
     
-    // Add Server header
     if (headers.find("Server") == headers.end()) {
-        ss << "Server: Bedrock/1.0 (Quartz)\r\n";
+        headerBuffer += "Server: Bedrock/1.1 (Quartz-Optimized)\r\n";
     }
     
-    // End headers
-    ss << "\r\n";
+    headerBuffer += "\r\n";
     
-    // Body
+    // Add header view
+    iov.push_back({headerBuffer.data(), headerBuffer.size()});
+    
+    // Add body view
     if (!body.empty()) {
-        ss << body;
+        iov.push_back({body.data(), body.size()});
     }
     
-    return ss.str();
+    return iov;
 }
 
 Response Response::ok(const std::string& body, const std::string& ct) {
@@ -669,7 +724,41 @@ void Router::addRoute(HttpMethod method, const std::string& path,
     while (it != routes_.end() && it->pattern.priority > route.pattern.priority) {
         ++it;
     }
-    routes_.insert(it, std::move(route));
+    auto insertedIt = routes_.insert(it, std::move(route));
+    
+    // Add to Radix Tree for fast lookup
+    addToRadix(*insertedIt);
+}
+
+void Router::addToRadix(Route& route) {
+    std::string_view path = route.pattern.pattern;
+    RadixNode* current = &radixRoot_;
+    
+    size_t start = 0;
+    while (start < path.size()) {
+        if (path[start] == '/') { start++; continue; }
+        size_t end = path.find('/', start);
+        if (end == std::string_view::npos) end = path.size();
+        std::string_view seg = path.substr(start, end - start);
+        
+        if (!seg.empty() && seg[0] == ':') {
+            if (!current->paramChild) {
+                current->paramChild = std::make_unique<RadixNode>();
+                current->paramName = std::string(seg.substr(1));
+            }
+            current = current->paramChild.get();
+        } else if (seg == "*" || seg == "**") {
+            if (!current->wildcardChild) {
+                current->wildcardChild = std::make_unique<RadixNode>();
+            }
+            current = current->wildcardChild.get();
+        } else {
+            current = current->getOrCreateStatic(seg);
+        }
+        
+        start = end;
+    }
+    current->route = &route;
 }
 
 Router& Router::get(const std::string& path, Handler handler) {
@@ -739,23 +828,46 @@ Router& Router::mount(const std::string& path, std::shared_ptr<Router> subRouter
     return *this;
 }
 
-bool Router::findRoute(HttpMethod method, const std::string& path,
+bool Router::findRoute(HttpMethod method, std::string_view path,
                        Route*& outRoute, std::unordered_map<std::string, std::string>& outParams) {
-    // First check sub-routers
+    // Check sub-routers first (they have their own prefix handled by findRoute)
     for (auto& [mountPath, subRouter] : subRouters_) {
-        if (path.find(mountPath) == 0 || mountPath.empty()) {
+        if (path.find(mountPath) == 0) {
             if (subRouter->findRoute(method, path, outRoute, outParams)) {
                 return true;
             }
         }
     }
     
-    // Then check own routes
-    for (Route& route : routes_) {
-        if (route.matches(method, path, outParams)) {
-            outRoute = &route;
-            return true;
+    // Use Radix Tree for fast lookup of own routes
+    RadixNode* current = &radixRoot_;
+    size_t start = 0;
+    
+    while (start < path.size()) {
+        if (path[start] == '/') { start++; continue; }
+        size_t end = path.find('/', start);
+        if (end == std::string_view::npos) end = path.size();
+        std::string_view seg = path.substr(start, end - start);
+        
+        // Try static match first
+        auto it = current->staticChildren.find(std::string(seg));
+        if (it != current->staticChildren.end()) {
+            current = it->second.get();
+        } else if (current->paramChild) {
+            outParams[current->paramName] = std::string(seg);
+            current = current->paramChild.get();
+        } else if (current->wildcardChild) {
+            current = current->wildcardChild.get();
+        } else {
+            return false;
         }
+        
+        start = end;
+    }
+    
+    if (current->route && (current->route->method == HttpMethod::ANY || current->route->method == method)) {
+        outRoute = current->route;
+        return true;
     }
     
     return false;

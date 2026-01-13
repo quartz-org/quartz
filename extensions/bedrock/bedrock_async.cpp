@@ -30,7 +30,7 @@ AsyncConnection::AsyncConnection(socket_t fd, const std::string& remoteAddr, int
     , remotePort_(remotePort)
     , lastActivity_(std::chrono::steady_clock::now())
 {
-    readBuffer_.reserve(8192);
+    readBuffer_ = BufferPool::instance().acquire();
 }
 
 AsyncConnection::~AsyncConnection() {
@@ -56,19 +56,25 @@ bool AsyncConnection::setNonBlocking(bool nonBlocking) {
 }
 
 int AsyncConnection::readNonBlocking() {
-    char buffer[16384];  // Larger buffer
     int totalRead = 0;
     
     while (true) {
+        if (readBuffer_->remaining() < 4096) {
+            readBuffer_->reserve(readBuffer_->capacity() + 8192);
+        }
+        
+        char* ptr = readBuffer_->data() + readBuffer_->size();
+        size_t space = readBuffer_->remaining();
+
 #ifdef QZ_PLATFORM_WINDOWS
-        int received = recv(fd_, buffer, sizeof(buffer), 0);
+        int received = recv(fd_, ptr, static_cast<int>(space), 0);
         if (received == 0) return -1; // Closed
         if (received == SOCKET_ERROR) {
             if (WSAGetLastError() == WSAEWOULDBLOCK) break;
             return -1;
         }
 #else
-        ssize_t received = recv(fd_, buffer, sizeof(buffer), 0);
+        ssize_t received = recv(fd_, ptr, space, 0);
         if (received == 0) return -1; // Closed
         if (received < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -76,11 +82,10 @@ int AsyncConnection::readNonBlocking() {
         }
 #endif
         
-        readBuffer_.append(buffer, static_cast<size_t>(received));
+        readBuffer_->advance(static_cast<size_t>(received)); // Just update size
         totalRead += static_cast<int>(received);
         
-        // Safety cap to prevent one client from hogging the thread
-        if (readBuffer_.size() > 1024 * 1024) break; 
+        if (readBuffer_->size() > 1024 * 1024) break; 
     }
     
     if (totalRead > 0) touch();
@@ -94,9 +99,10 @@ int AsyncConnection::readNonBlocking() {
 int AsyncConnection::writeNonBlocking() {
     int totalSent = 0;
     
-    while (writePos_ < writeBuffer_.size()) {
-        size_t remaining = writeBuffer_.size() - writePos_;
-        const char* data = writeBuffer_.c_str() + writePos_;
+    while (iovIndex_ < writeIov_.size()) {
+        const auto& iov = writeIov_[iovIndex_];
+        const char* data = iov.data + iovOffset_;
+        size_t len = iov.len - iovOffset_;
         
         int flags = 0;
 #ifdef QZ_PLATFORM_LINUX
@@ -104,21 +110,29 @@ int AsyncConnection::writeNonBlocking() {
 #endif
         
 #ifdef QZ_PLATFORM_WINDOWS
-        int sent = send(fd_, data, static_cast<int>(remaining), flags);
+        int sent = send(fd_, data, static_cast<int>(len), flags);
         if (sent == SOCKET_ERROR) {
             if (WSAGetLastError() == WSAEWOULDBLOCK) break;
             return -1;
         }
 #else
-        ssize_t sent = send(fd_, data, remaining, flags);
+        ssize_t sent = send(fd_, data, len, flags);
         if (sent < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             return -1;
         }
 #endif
         
-        writePos_ += sent;
+        iovOffset_ += sent;
         totalSent += static_cast<int>(sent);
+        
+        if (iovOffset_ >= iov.len) {
+            iovIndex_++;
+            iovOffset_ = 0;
+        }
+        
+        // Don't loop forever if we're sending a lot of small chunks
+        if (totalSent > 65536) break; 
     }
     
     if (totalSent > 0) touch();
@@ -130,18 +144,21 @@ bool AsyncConnection::hasCompleteRequest() const {
 }
 
 void AsyncConnection::setResponse(const Response& response) {
-    writeBuffer_ = response.build();
-    writePos_ = 0;
+    response_ = response;
+    writeIov_ = response_.buildIov();
+    iovIndex_ = 0;
+    iovOffset_ = 0;
 }
 
 void AsyncConnection::reset() {
-    readBuffer_.clear();
+    readBuffer_->clear();
     request_ = Request();
     contentLength_ = 0;
     bodyRead_ = 0;
     headersParsed_ = false;
-    writeBuffer_.clear();
-    writePos_ = 0;
+    writeIov_.clear();
+    iovIndex_ = 0;
+    iovOffset_ = 0;
     state_ = ConnectionState::READING_REQUEST;
     touch();
 }
@@ -153,17 +170,20 @@ bool AsyncConnection::isTimedOut(int timeoutMs) const {
 }
 
 bool AsyncConnection::parseRequest() {
+    std::string_view buf = readBuffer_->fullView();
+    
     if (headersParsed_) {
         // Reading body
-        size_t headersEnd = readBuffer_.find("\r\n\r\n");
-        if (headersEnd != std::string::npos) {
+        size_t headersEnd = buf.find("\r\n\r\n");
+        if (headersEnd != std::string_view::npos) {
             size_t bodyStart = headersEnd + 4;
-            size_t bodyAvailable = readBuffer_.size() - bodyStart;
+            size_t bodyAvailable = buf.size() - bodyStart;
             bodyRead_ = bodyAvailable;
             
             if (bodyRead_ >= contentLength_) {
                 // Complete request
-                request_.body = readBuffer_.substr(bodyStart, contentLength_);
+                request_.body = buf.substr(bodyStart, contentLength_);
+                request_.buffer = readBuffer_; // Keep buffer alive
                 return true;
             }
         }
@@ -171,26 +191,22 @@ bool AsyncConnection::parseRequest() {
     }
     
     // Look for end of headers
-    size_t pos = readBuffer_.find("\r\n\r\n");
-    if (pos == std::string::npos) {
-        return false;  // Headers not complete yet
-    }
-    
-    // Parse headers
-    std::string headerSection = readBuffer_.substr(0, pos);
-    
-    // Parse request line
-    size_t firstLine = headerSection.find("\r\n");
-    if (firstLine == std::string::npos) {
+    size_t pos = buf.find("\r\n\r\n");
+    if (pos == std::string_view::npos) {
         return false;
     }
     
-    std::string requestLine = headerSection.substr(0, firstLine);
+    // Parse request line
+    std::string_view headerSection = buf.substr(0, pos);
+    size_t firstLineEnd = headerSection.find("\r\n");
+    if (firstLineEnd == std::string_view::npos) return false;
+    
+    std::string_view requestLine = headerSection.substr(0, firstLineEnd);
     size_t p1 = requestLine.find(' ');
     size_t p2 = requestLine.rfind(' ');
     
-    if (p1 == std::string::npos || p2 == std::string::npos || p1 == p2) {
-        return false;  // Invalid request line
+    if (p1 == std::string_view::npos || p2 == std::string_view::npos || p1 == p2) {
+        return false;
     }
     
     request_.methodStr = requestLine.substr(0, p1);
@@ -198,85 +214,60 @@ bool AsyncConnection::parseRequest() {
     request_.rawPath = requestLine.substr(p1 + 1, p2 - p1 - 1);
     request_.protocol = requestLine.substr(p2 + 1);
     
-    // Parse path and query string
-    size_t qPos = request_.rawPath.find('?');
-    if (qPos != std::string::npos) {
-        request_.path = normalizePath(request_.rawPath.substr(0, qPos));
-        request_.queryString = request_.rawPath.substr(qPos + 1);
-        request_.query = parseQueryString(request_.queryString);
-    } else {
-        request_.path = normalizePath(request_.rawPath);
-    }
-    
-    // Parse headers
-    std::string headers = headerSection.substr(firstLine + 2);
+    // Parse headers - optimized vector-based parsing
+    std::string_view headersPart = headerSection.substr(firstLineEnd + 2);
     size_t lineStart = 0;
-    while (lineStart < headers.size()) {
-        size_t lineEnd = headers.find("\r\n", lineStart);
-        if (lineEnd == std::string::npos) {
-            lineEnd = headers.size();
-        }
+    while (lineStart < headersPart.size()) {
+        size_t lineEnd = headersPart.find("\r\n", lineStart);
+        if (lineEnd == std::string_view::npos) lineEnd = headersPart.size();
         
-        std::string line = headers.substr(lineStart, lineEnd - lineStart);
+        std::string_view line = headersPart.substr(lineStart, lineEnd - lineStart);
         size_t colonPos = line.find(':');
-        if (colonPos != std::string::npos) {
-            std::string name = line.substr(0, colonPos);
-            std::string value = line.substr(colonPos + 1);
+        if (colonPos != std::string_view::npos) {
+            std::string_view name = line.substr(0, colonPos);
+            std::string_view value = line.substr(colonPos + 1);
             
-            // Trim whitespace from value
-            size_t start = value.find_first_not_of(" \t");
-            if (start != std::string::npos) {
-                value = value.substr(start);
+            // Trim whitespace
+            size_t vstart = value.find_first_not_of(" \t");
+            if (vstart != std::string_view::npos) {
+                value = value.substr(vstart);
             }
             
-            // Store with lowercase key
-            std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-            request_.headers[name] = value;
+            request_.headers.push_back({name, value});
+            
+            // Extract important headers quickly
+            if (name.size() == 14) { // content-length
+                bool match = true;
+                const char* cl = "content-length";
+                for(int i=0; i<14; ++i) if(std::tolower(name[i]) != cl[i]) { match=false; break; }
+                if (match) {
+                    contentLength_ = 0;
+                    for (char c : value) if (c >= '0' && c <= '9') contentLength_ = contentLength_ * 10 + (c - '0');
+                    request_.contentLength = contentLength_;
+                }
+            } else if (name.size() == 4) { // host
+                bool match = true;
+                const char* h = "host";
+                for(int i=0; i<4; ++i) if(std::tolower(name[i]) != h[i]) { match=false; break; }
+                if (match) request_.host = value;
+            }
         }
         
         lineStart = lineEnd + 2;
-    }
-    
-    // Extract common headers
-    auto clIt = request_.headers.find("content-length");
-    if (clIt != request_.headers.end()) {
-        try {
-            contentLength_ = std::stoull(clIt->second);
-            request_.contentLength = contentLength_;
-        } catch (...) {
-            contentLength_ = 0;
-        }
-    }
-    
-    auto ctIt = request_.headers.find("content-type");
-    if (ctIt != request_.headers.end()) {
-        request_.contentType = ctIt->second;
-    }
-    
-    auto hostIt = request_.headers.find("host");
-    if (hostIt != request_.headers.end()) {
-        request_.host = hostIt->second;
-    }
-    
-    auto cookieIt = request_.headers.find("cookie");
-    if (cookieIt != request_.headers.end()) {
-        request_.cookies = parseCookies(cookieIt->second);
+        if (lineEnd == headersPart.size()) break;
     }
     
     headersParsed_ = true;
     
     // Check if body is already available
     size_t bodyStart = pos + 4;
-    if (bodyStart < readBuffer_.size()) {
-        size_t bodyAvailable = readBuffer_.size() - bodyStart;
-        bodyRead_ = bodyAvailable;
-        
-        if (bodyRead_ >= contentLength_) {
-            request_.body = readBuffer_.substr(bodyStart, contentLength_);
-            return true;
-        }
-    } else if (contentLength_ == 0) {
-        return true;  // No body expected
+    size_t bodyAvailable = buf.size() - bodyStart;
+    bodyRead_ = bodyAvailable;
+    
+    if (bodyRead_ >= contentLength_) {
+        request_.body = buf.substr(bodyStart, contentLength_);
+        request_.buffer = readBuffer_;
+        return true;
     }
     
     return false;
@@ -1142,7 +1133,7 @@ void AsyncServer::handleWrite(socket_t fd) {
         const AppConfig& config = app_->config();
         
         // Check for keep-alive
-        std::string connHeader = conn->getRequest().getHeader("Connection");
+        std::string connHeader(conn->getRequest().getHeader("Connection"));
         std::transform(connHeader.begin(), connHeader.end(), connHeader.begin(), ::tolower);
         
         if (connHeader == "keep-alive" || 

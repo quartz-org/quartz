@@ -60,7 +60,7 @@ public:
     
     // Buffer management
     bool hasCompleteRequest() const;
-    bool hasDataToWrite() const { return writePos_ < writeBuffer_.size(); }
+    bool hasDataToWrite() const { return iovIndex_ < writeIov_.size(); }
     Request& getRequest() { return request_; }
     void setResponse(const Response& response);
     void reset();  // Reset for keep-alive
@@ -84,16 +84,18 @@ private:
     int remotePort_;
     ConnectionState state_ = ConnectionState::READING_REQUEST;
     
-    // Read buffer and parser state
-    std::string readBuffer_;
+    // Read buffer and parser state (Zero-copy)
+    std::shared_ptr<IOBuffer> readBuffer_;
     Request request_;
     size_t contentLength_ = 0;
     size_t bodyRead_ = 0;
     bool headersParsed_ = false;
     
-    // Write buffer
-    std::string writeBuffer_;
-    size_t writePos_ = 0;
+    // Write buffer (Scatter/Gather)
+    Response response_; // Keep response alive while writing
+    std::vector<Response::BufferView> writeIov_;
+    size_t iovIndex_ = 0;
+    size_t iovOffset_ = 0;
     
     // Timing
     std::chrono::steady_clock::time_point lastActivity_;
@@ -101,10 +103,8 @@ private:
     // Request tracking
     uint64_t requestId_ = 0;
     
-    // Internal parsing
+    // Internal parsing (Zero-copy)
     bool parseRequest();
-    bool parseRequestLine();
-    bool parseHeaders();
 };
 
 // ============================================================================
