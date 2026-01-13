@@ -11,6 +11,9 @@ target_link_libraries(bedrock PRIVATE qz-core)
 # Platform-specific libraries
 if(WIN32)
     target_link_libraries(bedrock PRIVATE ws2_32)
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(bedrock PRIVATE Threads::Threads)
 endif()
 
 # Compiler flags for performance

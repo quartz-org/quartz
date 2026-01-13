@@ -31,18 +31,25 @@ Request convertUwsgiRequest(
     Request req;
     
     req.method = stringToMethod(method);
-    req.methodStr = method;
-    req.rawPath = uri;
-    req.path = normalizePath(path);
-    req.queryString = queryString;
-    req.protocol = protocol;
-    req.host = host;
+    req.methodStr = req.storeString(method);
+    req.rawPath = req.storeString(uri);
+    // Normalize path and store it
+    std::string normPath = normalizePath(path);
+    req.path = req.storeString(normPath);
+    
+    req.queryString = req.storeString(queryString);
+    req.protocol = req.storeString(protocol);
+    req.host = req.storeString(host);
     req.remoteAddr = remoteAddr;
     req.remotePort = remotePort;
-    req.contentType = contentType;
+    req.contentType = req.storeString(contentType);
     req.contentLength = contentLength;
-    req.body = body;
-    req.headers = headers;
+    req.body = req.storeString(body);
+    
+    // Copy headers to vector
+    for (const auto& [k, v] : headers) {
+        req.headers.push_back({req.storeString(k), req.storeString(v)});
+    }
     
     // Parse query string
     if (!queryString.empty()) {
@@ -50,9 +57,9 @@ Request convertUwsgiRequest(
     }
     
     // Parse cookies if present
-    auto cookieIt = headers.find("cookie");
-    if (cookieIt != headers.end()) {
-        req.cookies = parseCookies(cookieIt->second);
+    std::string_view cookieVal = req.getHeader("cookie");
+    if (!cookieVal.empty()) {
+        req.cookies = parseCookies(cookieVal);
     }
     
     return req;

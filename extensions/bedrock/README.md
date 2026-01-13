@@ -14,11 +14,14 @@ Bedrock is built on four core principles:
 
 ## Features
 
-- **High-Performance HTTP Server** - Standalone mode with epoll/kqueue
+- **High-Performance Async Server** - Event-driven with epoll (Linux), kqueue (macOS), and select (Windows)
+- **Worker Thread Pool** - Parallel request processing for maximum throughput
+- **Non-Blocking I/O** - Handles 10,000+ concurrent connections efficiently
 - **nginx Integration** - Production-ready uWSGI protocol support
 - **Flexible Routing** - Path parameters, wildcards, regex constraints
 - **Middleware Chain** - Composable request/response processing
 - **Zero Dependencies** - Pure C++ implementation, no external libraries
+- **Cross-Platform** - Works on Linux, macOS, and Windows
 
 ## Quick Start
 
@@ -325,6 +328,52 @@ uwsgi.onRequest(server, (req) => {
 uwsgi.start(server);
 ```
 
+## Architecture
+
+Bedrock uses a **high-performance async architecture** by default:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Event Loop                           │
+│  Platform-specific: epoll (Linux), kqueue (macOS),      │
+│                     select (Windows)                    │
+│                                                         │
+│  ┌─────────────┐                                        │
+│  │ Server FD   │◄─── Accept new connections             │
+│  └─────────────┘                                        │
+│                                                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │
+│  │ Client FD 1 │  │ Client FD 2 │  │ Client FD N │ ... │
+│  └─────────────┘  └─────────────┘  └─────────────┘     │
+│         │                │                │             │
+│         └────────────────┴────────────────┘             │
+│                          │                              │
+└──────────────────────────┼──────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│                   Worker Thread Pool                    │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ Worker 1 │  │ Worker 2 │  │ Worker N │  (N = CPUs)  │
+│  └──────────┘  └──────────┘  └──────────┘              │
+│                                                         │
+│  - Parse requests in parallel                           │
+│  - Execute route handlers                               │
+│  - Build responses                                      │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Key Benefits
+
+| Feature | Benefit |
+|---------|---------|
+| **Non-blocking I/O** | Single thread handles 10,000+ connections |
+| **Edge-triggered polling** | Minimal syscall overhead |
+| **Worker thread pool** | CPU cores utilized for request processing |
+| **Lock-free queues** | Minimal contention between threads |
+
 ## Performance Tips
 
 1. **Enable TCP_NODELAY** for low-latency responses
@@ -332,6 +381,7 @@ uwsgi.start(server);
 3. **Set appropriate timeouts** to prevent connection leaks
 4. **Use JSON for APIs** - Bedrock's JSON handling is optimized
 5. **Keep middleware minimal** - Each middleware adds latency
+6. **Configure worker threads** - Set `workerThreads` to match your CPU cores
 
 ## Example: REST API
 

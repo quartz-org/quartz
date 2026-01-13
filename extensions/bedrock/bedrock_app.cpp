@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include "bedrock_types.h"
+#include "bedrock_async.h"
 #include <algorithm>
 #include <sstream>
 #include <cstring>
@@ -47,7 +48,7 @@ public:
     bool hasError() const { return state_ == State::ERROR; }
     
     // Get parsed request (valid when isComplete())
-    Request& getRequest() { return request_; }
+    Request& getRequest();
     
     // Reset parser for next request
     void reset();
@@ -59,6 +60,10 @@ private:
     size_t contentLength_;
     size_t bodyRead_;
     
+    // Storage for zero-copy views in blocking mode
+    std::string bodyStorage_;
+    std::vector<std::pair<std::string, std::string>> headerStorage_;
+    
     bool parseRequestLine();
     bool parseHeaders();
 };
@@ -67,8 +72,24 @@ void HttpParser::reset() {
     state_ = State::REQUEST_LINE;
     request_ = Request();
     buffer_.clear();
+    bodyStorage_.clear();
+    headerStorage_.clear();
     contentLength_ = 0;
     bodyRead_ = 0;
+}
+
+Request& HttpParser::getRequest() {
+    // Populate views from storage before returning
+    request_.body = bodyStorage_;
+    request_.headers.clear();
+    for (const auto& h : headerStorage_) {
+        request_.headers.push_back({h.first, h.second});
+    }
+    
+    // Find host in headers for request_.host
+    request_.host = request_.getHeader("Host");
+    
+    return request_;
 }
 
 size_t HttpParser::feed(const char* data, size_t length) {
@@ -83,7 +104,7 @@ size_t HttpParser::feed(const char* data, size_t length) {
             // Read body data directly
             size_t remaining = contentLength_ - bodyRead_;
             size_t toRead = std::min(remaining, length - consumed);
-            request_.body.append(data + consumed, toRead);
+            bodyStorage_.append(data + consumed, toRead);
             bodyRead_ += toRead;
             consumed += toRead;
             
@@ -112,19 +133,30 @@ size_t HttpParser::feed(const char* data, size_t length) {
                         size_t pos2 = line.rfind(' ');
                         
                         if (pos1 != std::string::npos && pos2 != std::string::npos && pos1 != pos2) {
-                            request_.methodStr = line.substr(0, pos1);
+                            request_.methodStr = ""; // We'll set this later if needed, or point to line storage
+                            // For simplicity in legacy parser, we just use a persistent string
+                            static thread_local std::string methodLine;
+                            methodLine = line.substr(0, pos1);
+                            request_.methodStr = methodLine;
                             request_.method = stringToMethod(request_.methodStr);
-                            request_.rawPath = line.substr(pos1 + 1, pos2 - pos1 - 1);
-                            request_.protocol = line.substr(pos2 + 1);
+                            
+                            static thread_local std::string pathLine;
+                            pathLine = line.substr(pos1 + 1, pos2 - pos1 - 1);
+                            request_.rawPath = pathLine;
+                            
+                            static thread_local std::string protoLine;
+                            protoLine = line.substr(pos2 + 1);
+                            request_.protocol = protoLine;
                             
                             // Parse path and query string
+                            // Use storeString to get stable string_view from normalized path
                             size_t qPos = request_.rawPath.find('?');
                             if (qPos != std::string::npos) {
-                                request_.path = normalizePath(request_.rawPath.substr(0, qPos));
+                                request_.path = request_.storeString(normalizePath(request_.rawPath.substr(0, qPos)));
                                 request_.queryString = request_.rawPath.substr(qPos + 1);
                                 request_.query = parseQueryString(request_.queryString);
                             } else {
-                                request_.path = normalizePath(request_.rawPath);
+                                request_.path = request_.storeString(normalizePath(request_.rawPath));
                             }
                             
                             state_ = State::HEADERS;
@@ -137,37 +169,24 @@ size_t HttpParser::feed(const char* data, size_t length) {
                 case State::HEADERS:
                     if (line.empty()) {
                         // End of headers
-                        // Parse Content-Length
-                        auto clIt = request_.headers.find("content-length");
-                        if (clIt != request_.headers.end()) {
-                            try {
-                                contentLength_ = std::stoull(clIt->second);
-                                request_.contentLength = contentLength_;
-                            } catch (...) {
-                                contentLength_ = 0;
+                        // Parse Content-Length from headerStorage_
+                        for (const auto& h : headerStorage_) {
+                            if (h.first == "content-length") {
+                                try {
+                                    contentLength_ = std::stoull(h.second);
+                                    request_.contentLength = contentLength_;
+                                } catch (...) {
+                                    contentLength_ = 0;
+                                }
+                            } else if (h.first == "content-type") {
+                                request_.contentType = h.second;
+                            } else if (h.first == "cookie") {
+                                request_.cookies = parseCookies(h.second);
                             }
                         }
                         
-                        // Parse Content-Type
-                        auto ctIt = request_.headers.find("content-type");
-                        if (ctIt != request_.headers.end()) {
-                            request_.contentType = ctIt->second;
-                        }
-                        
-                        // Parse Host
-                        auto hostIt = request_.headers.find("host");
-                        if (hostIt != request_.headers.end()) {
-                            request_.host = hostIt->second;
-                        }
-                        
-                        // Parse Cookies
-                        auto cookieIt = request_.headers.find("cookie");
-                        if (cookieIt != request_.headers.end()) {
-                            request_.cookies = parseCookies(cookieIt->second);
-                        }
-                        
                         if (contentLength_ > 0) {
-                            request_.body.reserve(contentLength_);
+                            bodyStorage_.reserve(contentLength_);
                             state_ = State::BODY;
                         } else {
                             state_ = State::COMPLETE;
@@ -187,7 +206,7 @@ size_t HttpParser::feed(const char* data, size_t length) {
                             
                             // Store with lowercase key
                             std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-                            request_.headers[name] = value;
+                            headerStorage_.push_back({name, value});
                         }
                     }
                     break;
@@ -311,7 +330,7 @@ Application::Application(const std::string& name)
     
     // Default not found handler
     notFoundHandler_ = [](Context& ctx, NextFn next) {
-        ctx.res.notFound("Not Found: " + ctx.req.path);
+        ctx.res.notFound("Not Found: " + std::string(ctx.req.path));
     };
     
     // Default error handler
@@ -529,7 +548,7 @@ void Application::handleConnection(std::unique_ptr<Connection> conn) {
         }
         
         // Check keep-alive
-        std::string connHeader = req.getHeader("Connection");
+        std::string connHeader(req.getHeader("Connection"));
         std::transform(connHeader.begin(), connHeader.end(), connHeader.begin(), ::tolower);
         
         if (connHeader == "close" || !config_.enableKeepAlive) {
@@ -560,6 +579,9 @@ void Application::executeHandlers(Context& ctx, const std::vector<Handler>& hand
         return;
     }
     
+    // Lock for Quartz VM safety
+    std::lock_guard<std::recursive_mutex> lock(executeMutex_);
+    
     try {
         handlers[index](ctx, [this, &ctx, &handlers, index]() {
             executeHandlers(ctx, handlers, index + 1);
@@ -577,8 +599,10 @@ Response Application::handleRequest(Request& req) {
     Context ctx;
     ctx.req = std::move(req);
     
-    // Build handler chain
-    std::vector<Handler> handlers;
+    // Use thread-local handler vector to avoid repeated allocations
+    static thread_local std::vector<Handler> handlers;
+    handlers.clear();
+    handlers.reserve(8);  // Pre-reserve for typical middleware + handler chain
     
     // 1. Global middleware
     for (const auto& mw : globalMiddleware_) {
@@ -586,9 +610,12 @@ Response Application::handleRequest(Request& req) {
     }
     
     // 2. Router middleware matching path
-    for (const auto& [prefix, mw] : router_.getMiddleware()) {
-        if (prefix.empty() || ctx.req.path.find(prefix) == 0) {
-            handlers.push_back(mw);
+    const auto& middleware = router_.getMiddleware();
+    if (!middleware.empty()) {
+        for (const auto& [prefix, mw] : middleware) {
+            if (prefix.empty() || ctx.req.path.find(prefix) == 0) {
+                handlers.push_back(mw);
+            }
         }
     }
     
@@ -597,7 +624,7 @@ Response Application::handleRequest(Request& req) {
     std::unordered_map<std::string, std::string> params;
     
     if (router_.findRoute(ctx.req.method, ctx.req.path, route, params)) {
-        ctx.req.params = params;
+        ctx.req.params = std::move(params);
         ctx.matchedRoute = route->pattern.pattern;
         
         for (const auto& handler : route->handlers) {
@@ -629,7 +656,29 @@ bool Application::start() {
         return false;
     }
     
-    std::cerr << "[bedrock] Creating socket on " << config_.host << ":" << config_.port << std::endl;
+    stats_.reset();
+    
+    // Use high-performance async mode by default
+    if (useAsyncMode_) {
+        std::cerr << "[bedrock] Starting in HIGH-PERFORMANCE async mode on " 
+                  << config_.host << ":" << config_.port << std::endl;
+        
+        asyncServer_ = std::make_unique<AsyncServer>(this);
+        if (asyncServer_->start()) {
+            running_ = true;
+            shouldStop_ = false;
+            std::cerr << "[bedrock] Async server started successfully" << std::endl;
+            return true;
+        } else {
+            std::cerr << "[bedrock] Async mode failed, falling back to blocking mode" << std::endl;
+            asyncServer_.reset();
+            useAsyncMode_ = false;
+        }
+    }
+    
+    // Fallback to blocking mode (legacy)
+    std::cerr << "[bedrock] Starting in blocking mode on " 
+              << config_.host << ":" << config_.port << std::endl;
     
     if (!createSocket()) {
         std::cerr << "[bedrock] Failed to create socket: " << strerror(errno) << std::endl;
@@ -640,12 +689,11 @@ bool Application::start() {
     
     shouldStop_ = false;
     running_ = true;
-    stats_.reset();
     
-    // Start accept thread
+    // Start accept thread (blocking mode)
     acceptThread_ = std::thread(&Application::acceptLoop, this);
     
-    std::cerr << "[bedrock] Accept thread started" << std::endl;
+    std::cerr << "[bedrock] Accept thread started (blocking mode)" << std::endl;
     
     return true;
 }
@@ -655,13 +703,19 @@ void Application::stop() {
     
     shouldStop_ = true;
     
-    // Close server socket to unblock accept
+    // Stop async server if running
+    if (asyncServer_) {
+        asyncServer_->stop();
+        asyncServer_.reset();
+    }
+    
+    // Close server socket to unblock accept (blocking mode)
     if (serverSocket_ != INVALID_SOCKET_VALUE) {
         close_socket(serverSocket_);
         serverSocket_ = INVALID_SOCKET_VALUE;
     }
     
-    // Wait for accept thread
+    // Wait for accept thread (blocking mode)
     if (acceptThread_.joinable()) {
         acceptThread_.join();
     }
@@ -670,6 +724,15 @@ void Application::stop() {
 }
 
 void Application::wait() {
+    // In async mode, just block until stop is called
+    if (asyncServer_) {
+        while (running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return;
+    }
+    
+    // In blocking mode, wait for accept thread
     if (acceptThread_.joinable()) {
         acceptThread_.join();
     }
