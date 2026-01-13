@@ -599,8 +599,10 @@ Response Application::handleRequest(Request& req) {
     Context ctx;
     ctx.req = std::move(req);
     
-    // Build handler chain
-    std::vector<Handler> handlers;
+    // Use thread-local handler vector to avoid repeated allocations
+    static thread_local std::vector<Handler> handlers;
+    handlers.clear();
+    handlers.reserve(8);  // Pre-reserve for typical middleware + handler chain
     
     // 1. Global middleware
     for (const auto& mw : globalMiddleware_) {
@@ -608,9 +610,12 @@ Response Application::handleRequest(Request& req) {
     }
     
     // 2. Router middleware matching path
-    for (const auto& [prefix, mw] : router_.getMiddleware()) {
-        if (prefix.empty() || ctx.req.path.find(prefix) == 0) {
-            handlers.push_back(mw);
+    const auto& middleware = router_.getMiddleware();
+    if (!middleware.empty()) {
+        for (const auto& [prefix, mw] : middleware) {
+            if (prefix.empty() || ctx.req.path.find(prefix) == 0) {
+                handlers.push_back(mw);
+            }
         }
     }
     
@@ -619,7 +624,7 @@ Response Application::handleRequest(Request& req) {
     std::unordered_map<std::string, std::string> params;
     
     if (router_.findRoute(ctx.req.method, ctx.req.path, route, params)) {
-        ctx.req.params = params;
+        ctx.req.params = std::move(params);
         ctx.matchedRoute = route->pattern.pattern;
         
         for (const auto& handler : route->handlers) {

@@ -330,38 +330,58 @@ bool WorkerPool::submit(WorkItem item) {
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
         workQueue_.push(std::move(item));
-        pendingCount_++;
+        pendingCount_.fetch_add(1, std::memory_order_relaxed);
     }
     queueCV_.notify_one();
     return true;
 }
 
 void WorkerPool::workerLoop() {
-    while (running_.load()) {
-        WorkItem item;
+    // Thread-local batch for reduced lock contention
+    std::vector<WorkItem> localBatch;
+    localBatch.reserve(16);
+    
+    while (running_.load(std::memory_order_relaxed)) {
+        localBatch.clear();
         
         {
             std::unique_lock<std::mutex> lock(queueMutex_);
-            queueCV_.wait_for(lock, std::chrono::milliseconds(100), [this]() {
-                return !workQueue_.empty() || !running_.load();
+            
+            // Wait with shorter timeout for better responsiveness
+            queueCV_.wait_for(lock, std::chrono::microseconds(500), [this]() {
+                return !workQueue_.empty() || !running_.load(std::memory_order_relaxed);
             });
             
-            if (!running_.load() && workQueue_.empty()) {
+            if (!running_.load(std::memory_order_relaxed) && workQueue_.empty()) {
                 break;
             }
             
-            if (workQueue_.empty()) {
-                continue;
+            // Batch dequeue - grab multiple items at once to reduce lock contention
+            while (!workQueue_.empty() && localBatch.size() < 8) {
+                localBatch.push_back(std::move(workQueue_.front()));
+                workQueue_.pop();
+                pendingCount_.fetch_sub(1, std::memory_order_relaxed);
             }
-            
-            item = std::move(workQueue_.front());
-            workQueue_.pop();
-            pendingCount_--;
         }
         
-        // Process the work item
-        if (item.callback) {
-            item.callback(Response());  // Placeholder - actual response comes from app
+        // Process batch outside the lock
+        for (auto& item : localBatch) {
+            if (!item.app) continue;
+            
+            // Process the request
+            Response response = item.app->handleRequest(item.request);
+            
+            // Queue the response for the event loop
+            auto* respQueue = static_cast<std::queue<AsyncServer::ResponseItem>*>(item.responseQueue);
+            {
+                std::lock_guard<std::mutex> lock(*item.responseMutex);
+                respQueue->push({item.fd, item.requestId, std::move(response)});
+            }
+            
+            // Wake up the event loop
+            if (item.multiplexer) {
+                item.multiplexer->wakeup();
+            }
         }
     }
 }
@@ -975,9 +995,12 @@ void AsyncServer::eventLoop() {
     const AppConfig& config = app_->config();
     auto lastCleanup = std::chrono::steady_clock::now();
     
-    while (!shouldStop_.load()) {
-        // Poll for events
-        int numEvents = multiplexer_->poll(100);  // 100ms timeout
+    while (!shouldStop_.load(std::memory_order_relaxed)) {
+        // Poll for events - shorter timeout for better responsiveness
+        int numEvents = multiplexer_->poll(10);  // 10ms timeout (was 100ms)
+        
+        // Process responses from workers FIRST - prioritize completing requests
+        processResponses();
         
         // Process ready events
         for (const auto& event : multiplexer_->events()) {
@@ -1003,7 +1026,7 @@ void AsyncServer::eventLoop() {
             }
         }
         
-        // Process responses from workers
+        // Process responses again in case workers finished during event processing
         processResponses();
         
         // Periodic cleanup of timed-out connections
@@ -1089,7 +1112,7 @@ void AsyncServer::handleRead(socket_t fd) {
         // Request complete, submit to worker pool
         conn->setState(ConnectionState::PROCESSING);
         
-        uint64_t requestId = nextRequestId_++;
+        uint64_t requestId = nextRequestId_.fetch_add(1, std::memory_order_relaxed);
         conn->setRequestId(requestId);
         
         // Fill in connection info
@@ -1097,31 +1120,19 @@ void AsyncServer::handleRead(socket_t fd) {
         req.remoteAddr = conn->remoteAddr();
         req.remotePort = conn->remotePort();
         
-        // IMPORTANT: Copy the request for the worker thread!
-        // We need a copy because the connection might be reset or modified
-        // before the worker processes the request
-        Request requestCopy = req;
+        // Submit work item with all context needed for processing
+        WorkItem item;
+        item.fd = fd;
+        item.requestId = requestId;
+        item.request = std::move(req);
+        item.app = app_;
+        item.responseMutex = &responseMutex_;
+        item.responseQueue = &responseQueue_;
+        item.multiplexer = multiplexer_.get();
         
-        // Capture fd, requestId, and the request copy for callback
-        socket_t capturedFd = fd;
+        workerPool_->submit(std::move(item));
         
-        // Process request on worker thread
-        workerPool_->submit({
-            fd,
-            requestId,
-            Request(),  // Empty placeholder, we use the captured copy instead
-            [this, capturedFd, requestId, requestCopy = std::move(requestCopy)](Response) mutable {
-                // This callback is called from worker thread
-                // Process the captured request copy
-                Response response = app_->handleRequest(requestCopy);
-                
-                std::lock_guard<std::mutex> lock(responseMutex_);
-                responseQueue_.push({capturedFd, requestId, std::move(response)});
-                multiplexer_->wakeup();
-            }
-        });
-        
-        totalRequests_++;
+        totalRequests_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 

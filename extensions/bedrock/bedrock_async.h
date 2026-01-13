@@ -114,7 +114,12 @@ struct WorkItem {
     socket_t fd;
     uint64_t requestId;
     Request request;
-    std::function<void(Response)> callback;
+    
+    // Processing context (raw pointers - AsyncServer outlives workers)
+    Application* app;
+    std::mutex* responseMutex;
+    void* responseQueue;  // std::queue<ResponseItem>* but forward-declared
+    IOMultiplexer* multiplexer;
 };
 
 // ============================================================================
@@ -251,6 +256,13 @@ public:
     uint64_t totalConnections() const { return totalConnections_.load(); }
     uint64_t totalRequests() const { return totalRequests_.load(); }
     
+    // Response item - public so WorkerPool can access it
+    struct ResponseItem {
+        socket_t fd;
+        uint64_t requestId;
+        Response response;
+    };
+    
 private:
     Application* app_;
     std::atomic<bool> running_{false};
@@ -269,11 +281,6 @@ private:
     std::atomic<uint64_t> nextRequestId_{0};
     
     // Response queue (from workers back to event loop)
-    struct ResponseItem {
-        socket_t fd;
-        uint64_t requestId;
-        Response response;
-    };
     std::queue<ResponseItem> responseQueue_;
     std::mutex responseMutex_;
     

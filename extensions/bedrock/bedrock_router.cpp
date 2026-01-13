@@ -468,21 +468,55 @@ std::string Response::build() const {
 std::vector<Response::BufferView> Response::buildIov() const {
     std::vector<BufferView> iov;
     
-    // We need some static strings for fixed parts of the response
-    // In a real high-perf server, these would be pre-allocated or shared.
-    // For now, we build the header portion in a string and return a view of it.
-    // POTENTIAL ISSUE: Life cycle of the header string.
-    // Let's use a thread-local or member-owned buffer for headers.
+    // Pre-computed status lines for common codes
+    static const char* STATUS_200 = "HTTP/1.1 200 OK\r\n";
+    static const char* STATUS_201 = "HTTP/1.1 201 Created\r\n";
+    static const char* STATUS_204 = "HTTP/1.1 204 No Content\r\n";
+    static const char* STATUS_301 = "HTTP/1.1 301 Moved Permanently\r\n";
+    static const char* STATUS_302 = "HTTP/1.1 302 Found\r\n";
+    static const char* STATUS_304 = "HTTP/1.1 304 Not Modified\r\n";
+    static const char* STATUS_400 = "HTTP/1.1 400 Bad Request\r\n";
+    static const char* STATUS_401 = "HTTP/1.1 401 Unauthorized\r\n";
+    static const char* STATUS_403 = "HTTP/1.1 403 Forbidden\r\n";
+    static const char* STATUS_404 = "HTTP/1.1 404 Not Found\r\n";
+    static const char* STATUS_500 = "HTTP/1.1 500 Internal Server Error\r\n";
     
     static thread_local std::string headerBuffer;
     headerBuffer.clear();
     headerBuffer.reserve(512);
-
-    headerBuffer += "HTTP/1.1 ";
-    headerBuffer += std::to_string(statusCode);
-    headerBuffer += " ";
-    headerBuffer += statusText;
-    headerBuffer += "\r\n";
+    
+    // Use pre-computed status line for common codes
+    const char* statusLine = nullptr;
+    size_t statusLineLen = 0;
+    switch (statusCode) {
+        case 200: statusLine = STATUS_200; statusLineLen = 17; break;
+        case 201: statusLine = STATUS_201; statusLineLen = 22; break;
+        case 204: statusLine = STATUS_204; statusLineLen = 26; break;
+        case 301: statusLine = STATUS_301; statusLineLen = 33; break;
+        case 302: statusLine = STATUS_302; statusLineLen = 22; break;
+        case 304: statusLine = STATUS_304; statusLineLen = 26; break;
+        case 400: statusLine = STATUS_400; statusLineLen = 26; break;
+        case 401: statusLine = STATUS_401; statusLineLen = 27; break;
+        case 403: statusLine = STATUS_403; statusLineLen = 24; break;
+        case 404: statusLine = STATUS_404; statusLineLen = 24; break;
+        case 500: statusLine = STATUS_500; statusLineLen = 36; break;
+        default: break;
+    }
+    
+    if (statusLine) {
+        headerBuffer.append(statusLine, statusLineLen);
+    } else {
+        headerBuffer += "HTTP/1.1 ";
+        // Fast integer to string (avoid std::to_string allocation)
+        char buf[16];
+        char* p = buf + sizeof(buf);
+        int n = statusCode;
+        do { *--p = '0' + (n % 10); n /= 10; } while (n);
+        headerBuffer.append(p, buf + sizeof(buf) - p);
+        headerBuffer += " ";
+        headerBuffer += statusText;
+        headerBuffer += "\r\n";
+    }
     
     for (const auto& [name, value] : headers) {
         headerBuffer += name;
@@ -493,12 +527,17 @@ std::vector<Response::BufferView> Response::buildIov() const {
     
     if (headers.find("Content-Length") == headers.end() && !body.empty()) {
         headerBuffer += "Content-Length: ";
-        headerBuffer += std::to_string(body.size());
+        // Fast integer to string
+        char buf[24];
+        char* p = buf + sizeof(buf);
+        size_t n = body.size();
+        do { *--p = '0' + (n % 10); n /= 10; } while (n);
+        headerBuffer.append(p, buf + sizeof(buf) - p);
         headerBuffer += "\r\n";
     }
     
     if (headers.find("Server") == headers.end()) {
-        headerBuffer += "Server: Bedrock/1.1 (Quartz-Optimized)\r\n";
+        headerBuffer += "Server: Bedrock/1.1\r\n";
     }
     
     headerBuffer += "\r\n";
@@ -843,7 +882,10 @@ bool Router::findRoute(HttpMethod method, std::string_view path,
     RadixNode* current = &radixRoot_;
     size_t start = 0;
     bool radixFailed = false;
-    std::unordered_map<std::string, std::string> radixParams;
+    
+    // Use thread-local storage to avoid repeated allocations
+    static thread_local std::vector<std::pair<std::string*, std::string_view>> pendingParams;
+    pendingParams.clear();
     
     while (start < path.size()) {
         if (path[start] == '/') { start++; continue; }
@@ -851,12 +893,20 @@ bool Router::findRoute(HttpMethod method, std::string_view path,
         if (end == std::string_view::npos) end = path.size();
         std::string_view seg = path.substr(start, end - start);
         
-        // Try static match first
-        auto it = current->staticChildren.find(std::string(seg));
-        if (it != current->staticChildren.end()) {
-            current = it->second.get();
+        // Try static match first - use string_view comparison where possible
+        RadixNode* next = nullptr;
+        for (auto& [key, child] : current->staticChildren) {
+            if (key.size() == seg.size() && key == seg) {
+                next = child.get();
+                break;
+            }
+        }
+        
+        if (next) {
+            current = next;
         } else if (current->paramChild) {
-            radixParams[current->paramName] = std::string(seg);
+            // Defer string allocation - store pointer and value
+            pendingParams.emplace_back(&outParams[current->paramName], seg);
             current = current->paramChild.get();
         } else if (current->wildcardChild) {
             current = current->wildcardChild.get();
@@ -871,13 +921,15 @@ bool Router::findRoute(HttpMethod method, std::string_view path,
     // Check if radix tree found a match
     if (!radixFailed && current->route && 
         (current->route->method == HttpMethod::ANY || current->route->method == method)) {
+        // Only now convert params to strings
+        for (auto& [dest, val] : pendingParams) {
+            *dest = std::string(val);
+        }
         outRoute = current->route;
-        outParams = std::move(radixParams);
         return true;
     }
     
     // Fallback to regex-based matching for routes that radix tree couldn't handle
-    // This handles complex patterns, regex constraints, and edge cases
     std::string pathStr(path);
     for (auto& route : routes_) {
         std::unordered_map<std::string, std::string> params;
