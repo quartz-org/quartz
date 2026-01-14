@@ -5,6 +5,6 @@
         "system_runtime",
         "system_net_socket",
         "system_async_eventloop",
-        "system_net_uwsgi"
+        "system_net_uwsgi"
     ]
 }
