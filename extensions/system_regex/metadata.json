@@ -1,0 +1,107 @@
+{
+    "name": "system.regex",
+    "author": "Quartz Team",
+    "version": "1.0.0",
+    "description": "Regular expression operations using ECMAScript regex syntax",
+    "functions": [
+        {
+            "name": "system.regex.test",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "bool",
+            "description": "Test if string matches pattern"
+        },
+        {
+            "name": "system.regex.match",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "array",
+            "description": "First match with groups [fullMatch, group1, ...]"
+        },
+        {
+            "name": "system.regex.matchAll",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "array",
+            "description": "All matches with groups"
+        },
+        {
+            "name": "system.regex.replace",
+            "params": [
+                "str: string",
+                "pattern: string",
+                "replacement: string"
+            ],
+            "returns": "string",
+            "description": "Replace all matches"
+        },
+        {
+            "name": "system.regex.replaceFirst",
+            "params": [
+                "str: string",
+                "pattern: string",
+                "replacement: string"
+            ],
+            "returns": "string",
+            "description": "Replace first match only"
+        },
+        {
+            "name": "system.regex.split",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "array",
+            "description": "Split string by pattern"
+        },
+        {
+            "name": "system.regex.findIndex",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "int",
+            "description": "Index of first match (-1 if not found)"
+        },
+        {
+            "name": "system.regex.count",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "int",
+            "description": "Count number of matches"
+        },
+        {
+            "name": "system.regex.isValid",
+            "params": [
+                "pattern: string"
+            ],
+            "returns": "bool",
+            "description": "Check if pattern is valid regex"
+        },
+        {
+            "name": "system.regex.escape",
+            "params": [
+                "str: string"
+            ],
+            "returns": "string",
+            "description": "Escape special regex characters"
+        },
+        {
+            "name": "system.regex.extract",
+            "params": [
+                "str: string",
+                "pattern: string"
+            ],
+            "returns": "array",
+            "description": "Extract all matches (first group if present)"
+        }
+    ]
+}
