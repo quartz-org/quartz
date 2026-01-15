@@ -1,0 +1,90 @@
+// Regex Extension Demo
+// Tests all system.regex functions
+
+import system.regex as regex;
+import system.io as io;
+
+// Test data
+string text = "The quick brown fox jumps over the lazy dog";
+string email = "Contact us at hello@example.com or support@test.org";
+string numbers = "abc123def456ghi789";
+
+// ============================================
+// system.regex.test - Test if pattern matches
+// ============================================
+io.println("=== regex.test ===");
+io.println("Contains 'fox':", regex.test(text, "fox"));
+io.println("Contains 'cat':", regex.test(text, "cat"));
+io.println("Contains digits:", regex.test(numbers, "[0-9]+"));
+
+// ============================================
+// system.regex.match - First match with groups
+// ============================================
+io.println("\n=== regex.match ===");
+let wordMatch = regex.match(text, "(quick|lazy)");
+io.println("Word match:", wordMatch);
+
+// ============================================
+// system.regex.matchAll - All matches
+// ============================================
+io.println("\n=== regex.matchAll ===");
+let allWords = regex.matchAll(text, "[a-z]+");
+io.println("All lowercase words:", allWords);
+
+// ============================================
+// system.regex.replace - Replace all matches
+// ============================================
+io.println("\n=== regex.replace ===");
+string replaced = regex.replace(text, "fox|dog", "animal");
+io.println("Replace fox/dog:", replaced);
+
+// ============================================
+// system.regex.replaceFirst - Replace first only
+// ============================================
+io.println("\n=== regex.replaceFirst ===");
+string firstReplace = regex.replaceFirst(text, "[a-z]+", "WORD");
+io.println("Replace first word:", firstReplace);
+
+// ============================================
+// system.regex.split - Split by pattern
+// ============================================
+io.println("\n=== regex.split ===");
+let splitBySpace = regex.split(text, " ");
+io.println("Split by space:", splitBySpace);
+
+// ============================================
+// system.regex.findIndex - Find position
+// ============================================
+io.println("\n=== regex.findIndex ===");
+io.println("Position of 'fox':", regex.findIndex(text, "fox"));
+io.println("Position of 'cat':", regex.findIndex(text, "cat"));
+
+// ============================================
+// system.regex.count - Count matches
+// ============================================
+io.println("\n=== regex.count ===");
+io.println("Count 'the' (case insensitive):", regex.count(text, "[Tt]he"));
+io.println("Count words:", regex.count(text, "[a-z]+"));
+
+// ============================================
+// system.regex.extract - Extract matches
+// ============================================
+io.println("\n=== regex.extract ===");
+let extracted = regex.extract(numbers, "[0-9]+");
+io.println("Extract numbers:", extracted);
+
+// ============================================
+// system.regex.isValid - Validate pattern
+// ============================================
+io.println("\n=== regex.isValid ===");
+io.println("Valid '[a-z]+':", regex.isValid("[a-z]+"));
+io.println("Invalid '[invalid':", regex.isValid("[invalid"));
+
+// ============================================
+// system.regex.escape - Escape special chars
+// ============================================
+io.println("\n=== regex.escape ===");
+string special = "Price: $10.00";
+io.println("Escaped:", regex.escape(special));
+
+io.println("\nAll regex functions tested!");
