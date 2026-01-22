@@ -594,6 +594,10 @@ bool BytecodeVM::execDefClass(const std::vector<uint8_t>& code, size_t& ip, std:
     bcClass.name = className;
     bcClass.parent = parentName;
     bcClass.fields = fields;
+    // Build field name -> index map
+    for (size_t i = 0; i < fields.size(); ++i) {
+        bcClass.fieldToIndex[fields[i]] = i;
+    }
     bcClass.hasConstructor = hasCtor;
     bcClass.ctorFunctionIndex = ctorFn;
     bcClass.ctorParams = ctorParams;
@@ -624,6 +628,8 @@ bool BytecodeVM::execDefClass(const std::vector<uint8_t>& code, size_t& ip, std:
 
     classes[className] = std::move(bcClass);
     if (!currentLoadingModule.empty()) classToModule[className] = currentLoadingModule;
+    // Invalidate property cache because class definitions changed
+    propertyCache.clear();
 
     // Also mirror interpreter classRegistry enough for object creation / dot access naming.
     ClassDef def;
@@ -783,12 +789,40 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
             auto obj = objIt->second;
             std::string className = obj->getClassName();
 
-            if (args.empty() && obj->hasField(member)) return obj->getField(member);
+            // Property/method cache lookup
+            std::string cacheKey = className + "." + member;
+            auto cacheIt = propertyCache.find(cacheKey);
+            if (cacheIt != propertyCache.end()) {
+                const PropertyCacheEntry& entry = cacheIt->second;
+                if (entry.kind == PropertyCacheEntry::Method && entry.methodIndex != bc::kInvalidIndex) {
+                    std::string thisObj = objIt->first;
+                    return runFunction(entry.methodIndex, args, nullptr, &thisObj, error);
+                }
+                if (entry.kind == PropertyCacheEntry::Field) {
+                    // field offset caching not yet implemented, fall through
+                }
+            }
+
+            if (args.empty() && obj->hasField(member)) {
+                // Update cache
+                PropertyCacheEntry entry;
+                entry.kind = PropertyCacheEntry::Field;
+                entry.className = className;
+                entry.fieldOffset = 0; // placeholder
+                propertyCache[cacheKey] = entry;
+                return obj->getField(member);
+            }
 
             auto cIt = classes.find(className);
             if (cIt != classes.end()) {
                 auto mIt = cIt->second.methods.find(member);
                 if (mIt != cIt->second.methods.end() && mIt->second.functionIndex != bc::kInvalidIndex) {
+                    // Update cache
+                    PropertyCacheEntry entry;
+                    entry.kind = PropertyCacheEntry::Method;
+                    entry.className = className;
+                    entry.methodIndex = mIt->second.functionIndex;
+                    propertyCache[cacheKey] = entry;
                     // Set this
                     std::string thisObj = objIt->first;
                     return runFunction(mIt->second.functionIndex, args, nullptr, &thisObj, error);
@@ -796,7 +830,15 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
             }
 
             // fallback field
-            if (obj->hasField(member)) return obj->getField(member);
+            if (obj->hasField(member)) {
+                // Update cache
+                PropertyCacheEntry entry;
+                entry.kind = PropertyCacheEntry::Field;
+                entry.className = className;
+                entry.fieldOffset = 0; // placeholder
+                propertyCache[cacheKey] = entry;
+                return obj->getField(member);
+            }
         }
     }
 
@@ -950,6 +992,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
 
     // Clear container cache at function entry (containers may have changed)
     indexContainerCache.clear();
+    propertyCache.clear();
 
     // ARC: Save/override variable scope for calls (mirrors interpreter behavior)
     auto savedVars = runtime.variables;

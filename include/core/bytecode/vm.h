@@ -48,6 +48,7 @@ private:
         std::string name;
         std::string parent;
         std::vector<std::string> fields;
+        std::unordered_map<std::string, size_t> fieldToIndex; // field name -> index in fields vector
         std::unordered_map<std::string, BCMethod> methods;
         std::unordered_map<std::string, BCMethod> staticMethods;
 
@@ -89,6 +90,19 @@ private:
         size_t id = 0;
     };
     std::unordered_map<uint32_t, ContainerCacheEntry> indexContainerCache;
+
+    // ========================================================================
+    // Property/Method Cache for Fast Member Lookup
+    // ========================================================================
+    // Caches resolved className.member -> (kind, offset/index) to avoid repeated
+    // dictionary lookups. Cleared when new classes are defined.
+    struct PropertyCacheEntry {
+        enum Kind : uint8_t { None = 0, Field = 1, Method = 2 } kind = None;
+        std::string className;          // for validation
+        size_t fieldOffset = 0;         // index into instance's field vector (if Field)
+        uint32_t methodIndex = bc::kInvalidIndex; // function index for method (if Method)
+    };
+    std::unordered_map<std::string, PropertyCacheEntry> propertyCache;
 
     // Execution
     Value runFunction(uint32_t functionIndex, const std::vector<Value>& args,
