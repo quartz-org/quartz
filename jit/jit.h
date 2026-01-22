@@ -207,7 +207,13 @@ private:
     };
     std::unordered_map<size_t, Label> labels_;  // bytecode IP -> label
     
+    // Register allocation for local slots
+    std::unordered_map<uint16_t, uint8_t> slotToReg_;   // slot -> register index (0=R14,1=R15)
+    std::unordered_map<uint8_t, uint16_t> regToSlot_;   // register index -> slot
+    std::vector<uint16_t> usedSlots_;                   // slots used in function
+    
     // Internal compilation methods
+    void analyzeSlotUsage(const bc::Function& fn);
     void resetEmitState();
     void emitByte(uint8_t b);
     void emitBytes(const uint8_t* data, size_t len);

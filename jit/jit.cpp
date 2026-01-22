@@ -509,6 +509,103 @@ static bool hasLoop(const bc::Function& fn) {
     return false;
 }
 
+// Analyze slot usage and assign registers for up to 2 most used slots
+void Compiler::analyzeSlotUsage(const bc::Function& fn) {
+    slotToReg_.clear();
+    regToSlot_.clear();
+    usedSlots_.clear();
+    
+    std::unordered_map<uint16_t, uint32_t> slotCounts;
+    const auto& code = fn.code;
+    size_t ip = 0;
+    while (ip < code.size()) {
+        auto opcode = static_cast<bc::OpCode>(code[ip++]);
+        switch (opcode) {
+            case bc::OpCode::LOAD_SLOT:
+            case bc::OpCode::STORE_SLOT:
+            case bc::OpCode::INCREMENT_SLOT:
+            case bc::OpCode::DECREMENT_SLOT:
+            case bc::OpCode::LOAD_SLOT_PUSH_INT32:
+            case bc::OpCode::BINARY_OP_STORE_SLOT:
+            case bc::OpCode::LOOP_COND_SLOT_LT_INT32: {
+                uint16_t slot = 0;
+                if (opcode == bc::OpCode::LOAD_SLOT ||
+                    opcode == bc::OpCode::STORE_SLOT ||
+                    opcode == bc::OpCode::INCREMENT_SLOT ||
+                    opcode == bc::OpCode::DECREMENT_SLOT ||
+                    opcode == bc::OpCode::LOAD_SLOT_PUSH_INT32 ||
+                    opcode == bc::OpCode::BINARY_OP_STORE_SLOT) {
+                    std::memcpy(&slot, &code[ip], 2);
+                    ip += 2;
+                } else if (opcode == bc::OpCode::LOOP_COND_SLOT_LT_INT32) {
+                    std::memcpy(&slot, &code[ip], 2);
+                    ip += 2 + 4 + 4; // slot, limit, rel
+                }
+                slotCounts[slot]++;
+                break;
+            }
+            case bc::OpCode::LOAD_SLOT_0:
+            case bc::OpCode::STORE_SLOT_0:
+                slotCounts[0]++;
+                break;
+            default:
+                // skip immediates based on opcode (similar to canCompile)
+                // we don't need to track other opcodes
+                switch (opcode) {
+                    case bc::OpCode::PUSH_INT32:
+                        ip += 4;
+                        break;
+                    case bc::OpCode::PUSH_DOUBLE64:
+                        ip += 8;
+                        break;
+                    case bc::OpCode::PUSH_BOOL:
+                        ip += 1;
+                        break;
+                    case bc::OpCode::PUSH_STRING:
+                        ip += 4;
+                        break;
+                    case bc::OpCode::CALL_NAME:
+                        ip += 4 + 1;
+                        break;
+                    case bc::OpCode::CALL_NAME_0:
+                    case bc::OpCode::CALL_NAME_1:
+                    case bc::OpCode::CALL_NAME_2:
+                        ip += 4;
+                        break;
+                    case bc::OpCode::JUMP:
+                    case bc::OpCode::JUMP_IF_FALSE:
+                    case bc::OpCode::JUMP_IF_TRUE:
+                        ip += 4;
+                        break;
+                    default:
+                        // no immediates
+                        break;
+                }
+                break;
+        }
+    }
+    
+    // Collect used slots
+    for (const auto& [slot, count] : slotCounts) {
+        usedSlots_.push_back(slot);
+    }
+    
+    // Sort by frequency descending
+    std::sort(usedSlots_.begin(), usedSlots_.end(),
+              [&slotCounts](uint16_t a, uint16_t b) {
+                  return slotCounts[a] > slotCounts[b];
+              });
+    
+    // Assign registers to top 2 slots (if any)
+    const uint8_t availableRegisters[] = {0, 1}; // 0=R14, 1=R15
+    for (size_t i = 0; i < usedSlots_.size() && i < 2; ++i) {
+        uint16_t slot = usedSlots_[i];
+        uint8_t reg = availableRegisters[i];
+        slotToReg_[slot] = reg;
+        regToSlot_[reg] = slot;
+    }
+}
+
 // =============================================================================
 // Direct x86-64 Code Emission Helpers
 // =============================================================================
