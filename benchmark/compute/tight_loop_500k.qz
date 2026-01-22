@@ -1,6 +1,6 @@
-import system.io as io;
 // @benchmark: name="Tight Loop 500k" iterations=500000 category="compute"
 // Simple tight loop - baseline for loop overhead measurement
+// JIT-compatible: no I/O, only arithmetic and loops
 
 let sum = 0;
 let i = 0;
@@ -8,4 +8,5 @@ while (i < 500000) {
     sum = sum + i;
     i = i + 1;
 }
-io.out.println(sum);
+// Return sum (benchmark runner will handle output)
+sum;

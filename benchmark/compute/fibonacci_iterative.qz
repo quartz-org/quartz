@@ -1,6 +1,6 @@
-import system.io as io;
 // @benchmark: name="Fibonacci Iterative" iterations=50 category="compute"
 // Iterative fibonacci - tests loop + variable updates
+// JIT-compatible: no I/O, only arithmetic and loops
 
 fn fib_iter(n) {
     if (n <= 1) {
@@ -24,4 +24,5 @@ while (i < 10000) {
     sum = sum + fib_iter(50);
     i = i + 1;
 }
-io.out.println(sum);
+// Return result (benchmark runner will handle output)
+sum;
