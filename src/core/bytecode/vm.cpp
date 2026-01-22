@@ -110,11 +110,9 @@ static inline bool isStringValue(const Value& v) { return std::holds_alternative
 BytecodeVM::BytecodeVM(Runtime& rt) : runtime(rt) {
 #ifdef QZ_JIT_ENABLED
     jitEngine_ = std::make_unique<qz::jit::Engine>(rt);
-    // Check if JIT should be enabled by default (compile-time threshold)
-    #ifdef QZ_JIT_THRESHOLD
-    jitThreshold_ = QZ_JIT_THRESHOLD;
+    // Override compile-time threshold for aggressive JIT on hot loops
+    jitThreshold_ = 10;
     jitEngine_->setThreshold(jitThreshold_);
-    #endif
     jitEnabled_ = true;  // Enable by default when built with JIT support
 #endif
 }

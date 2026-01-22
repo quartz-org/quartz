@@ -418,6 +418,81 @@ bool Compiler::canCompile(const bc::Function& fn) {
     return true;
 }
 
+static bool hasLoop(const bc::Function& fn) {
+    const auto& code = fn.code;
+    size_t ip = 0;
+    while (ip < code.size()) {
+        auto opcode = static_cast<bc::OpCode>(code[ip++]);
+        if (opcode == bc::OpCode::LOOP_COND_SLOT_LT_INT32) {
+            return true;
+        }
+        // skip immediates based on opcode (similar to canCompile)
+        switch (opcode) {
+            case bc::OpCode::PUSH_INT32:
+                ip += 4;
+                break;
+            case bc::OpCode::PUSH_DOUBLE64:
+                ip += 8;
+                break;
+            case bc::OpCode::PUSH_BOOL:
+                ip += 1;
+                break;
+            case bc::OpCode::PUSH_STRING:
+                ip += 4;
+                break;
+            case bc::OpCode::LOAD_VAR:
+            case bc::OpCode::STORE_VAR:
+            case bc::OpCode::CALL_NAME:
+            case bc::OpCode::CALL_NAME_0:
+            case bc::OpCode::CALL_NAME_1:
+            case bc::OpCode::CALL_NAME_2:
+            case bc::OpCode::NEW_OBJECT:
+            case bc::OpCode::DEF_FUNCTION:
+            case bc::OpCode::INDEX_GET:
+            case bc::OpCode::DEF_CLASS:
+            case bc::OpCode::DEF_INTERFACE:
+            case bc::OpCode::TRY_PUSH:
+            case bc::OpCode::THROW_NEW:
+            case bc::OpCode::SET_CURRENT_MODULE:
+                ip += 4;
+                break;
+            case bc::OpCode::DECLARE_ARRAY:
+            case bc::OpCode::DECLARE_DICT:
+            case bc::OpCode::DECLARE_LAMBDA:
+            case bc::OpCode::MAKE_LAMBDA:
+            case bc::OpCode::MAKE_ARRAY_EXPR:
+            case bc::OpCode::MAKE_DICT_EXPR:
+                // variable size, skip minimal to avoid misreading
+                // For simplicity, assume no loop inside these complex ops
+                return false;
+            case bc::OpCode::LOAD_SLOT:
+            case bc::OpCode::STORE_SLOT:
+            case bc::OpCode::INCREMENT_SLOT:
+            case bc::OpCode::DECREMENT_SLOT:
+            case bc::OpCode::LOAD_SLOT_PUSH_INT32:
+            case bc::OpCode::BINARY_OP_STORE_SLOT:
+                ip += 2;
+                break;
+            case bc::OpCode::LOOP_COND_SLOT_LT_INT32:
+                // already handled
+                break;
+            case bc::OpCode::JUMP:
+            case bc::OpCode::JUMP_IF_FALSE:
+            case bc::OpCode::JUMP_IF_TRUE:
+                ip += 4;
+                break;
+            case bc::OpCode::BINARY_OP:
+            case bc::OpCode::UNARY_OP:
+                ip += 1;
+                break;
+            default:
+                // no immediates
+                break;
+        }
+    }
+    return false;
+}
+
 // =============================================================================
 // Direct x86-64 Code Emission Helpers
 // =============================================================================
@@ -1379,7 +1454,22 @@ CompiledFunction* Engine::getCompiled(const bc::Program& program, uint32_t funct
     }
     
     // Should we compile?
-    if (!shouldCompile(functionIndex)) {
+    bool needCompile = shouldCompile(functionIndex);
+    if (!needCompile) {
+        // Check if function contains a loop and is compilable
+        if (functionIndex < program.functions.size()) {
+            const bc::Function& fn = program.functions[functionIndex];
+            if (hasLoop(fn) && compiler_->canCompile(fn)) {
+                // Force compilation for loops
+#ifdef QZ_JIT_DEBUG
+                std::cerr << "[JIT] Loop detected in function #" << functionIndex << ", forcing compilation" << std::endl;
+#endif
+                callCounts_[functionIndex] = threshold_;
+                needCompile = true;
+            }
+        }
+    }
+    if (!needCompile) {
         return nullptr;
     }
     
