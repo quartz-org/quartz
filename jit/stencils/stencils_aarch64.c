@@ -144,6 +144,12 @@ void stencil_pop(void) {
     __asm__ volatile("nop");
 }
 
+STENCIL
+void stencil_pop2(void) {
+    // Pop two values
+    __asm__ volatile("nop; nop");
+}
+
 // =============================================================================
 // Local Variable Operations
 // =============================================================================

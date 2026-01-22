@@ -518,6 +518,28 @@ void stencil_gt_double(void) {
     stack[-1] = jv_make_bool(result);
 }
 
+/**
+ * Double less or equal: stack[-1] = (stack[-1] <= stack[0])
+ * Holes: HOLE_STACK_PTR
+ */
+STENCIL
+void stencil_le_double(void) {
+    JITValue* stack = (JITValue*)HOLE_STACK_PTR;
+    bool result = jv_as_double(stack[-1]) <= jv_as_double(stack[0]);
+    stack[-1] = jv_make_bool(result);
+}
+
+/**
+ * Double greater or equal: stack[-1] = (stack[-1] >= stack[0])
+ * Holes: HOLE_STACK_PTR
+ */
+STENCIL
+void stencil_ge_double(void) {
+    JITValue* stack = (JITValue*)HOLE_STACK_PTR;
+    bool result = jv_as_double(stack[-1]) >= jv_as_double(stack[0]);
+    stack[-1] = jv_make_bool(result);
+}
+
 // =============================================================================
 // Logical / Boolean Stencils
 // =============================================================================
@@ -1286,6 +1308,21 @@ void stencil_store_and_pop(void) {
     uint64_t slot_idx = HOLE_SLOT_IDX;
     JITValue* locals = stack;
     locals[-(int64_t)slot_idx - 1] = stack[0];
+}
+
+/**
+ * Check bounds: if index (TOS) < 0 or >= limit, set error flag (-1)
+ * Holes: HOLE_STACK_PTR, HOLE_IMM64
+ */
+STENCIL
+void stencil_check_bounds(void) {
+    JITValue* stack = (JITValue*)HOLE_STACK_PTR;
+    int64_t index = (int64_t)stack[0].bits;
+    int64_t limit = (int64_t)HOLE_imm64;
+    if (index < 0 || index >= limit) {
+        stack[0].bits = (uint64_t)-1;
+        stack[0].tag = TAG_INT;
+    }
 }
 
 /**

@@ -7,7 +7,6 @@
 # Usage:
 #   ./run_benchmarks.sh                    # Run all benchmarks
 #   ./run_benchmarks.sh --suite micro      # Run specific suite
-#   ./run_benchmarks.sh --mode interpreted # Run in interpreted mode
 #   ./run_benchmarks.sh --quick            # Quick smoke test
 #   ./run_benchmarks.sh --verbose          # Detailed output
 #   ./run_benchmarks.sh --output results/  # Custom output directory
@@ -27,9 +26,6 @@ WARMUP_RUNS=2
 BENCHMARK_RUNS=5
 VERBOSE=false
 QUICK=false
-MODE="bytecode"
-DELETED_COUNT=0
-COMPILED_COUNT=0
 
 # Colors for output
 RED='\033[0;31m'
@@ -54,10 +50,6 @@ while [[ $# -gt 0 ]]; do
             WARMUP_RUNS="$2"
             shift 2
             ;;
-        --mode)
-            MODE="$2"
-            shift 2
-            ;;
         --verbose|-v)
             VERBOSE=true
             shift
@@ -79,7 +71,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --suite SUITE   Run specific suite (micro, compute, memory, realworld, all)"
             echo "  --runs N        Number of benchmark runs (default: 5)"
             echo "  --warmup N      Number of warmup runs (default: 2)"
-            echo "  --mode MODE     Execution mode: bytecode (default) or interpreted"
             echo "  --verbose, -v   Verbose output"
             echo "  --quick, -q     Quick mode (fewer runs)"
             echo "  --output, -o    Output directory for results"
@@ -92,24 +83,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Validate mode
-if [[ "$MODE" != "bytecode" && "$MODE" != "interpreted" ]]; then
-    echo -e "${RED}Error: Invalid mode '$MODE'. Must be 'bytecode' or 'interpreted'${NC}"
-    exit 1
-fi
-
-# Clean up existing bytecode files if in bytecode mode
-if [[ "$MODE" == "bytecode" ]]; then
-    echo -e "${BLUE}Cleaning up existing bytecode files...${NC}"
-    DELETED_COUNT=$(find "$SCRIPT_DIR" -name "*.qzb" | wc -l)
-    if [[ $DELETED_COUNT -gt 0 ]]; then
-        find "$SCRIPT_DIR" -name "*.qzb" -delete
-        echo -e "${BLUE}Deleted $DELETED_COUNT .qzb file(s).${NC}"
-    else
-        echo -e "${BLUE}No existing .qzb files to delete.${NC}"
-    fi
-fi
 
 # Ensure quartz is built
 if [[ ! -x "$QUARTZ" ]]; then
@@ -133,7 +106,6 @@ echo -e "${NC}"
 echo "Quartz:    $QUARTZ"
 echo "Suite:     $SUITE"
 echo "Runs:      $BENCHMARK_RUNS (warmup: $WARMUP_RUNS)"
-echo "Mode:      $MODE"
 echo "Output:    $RUN_RESULTS_DIR"
 echo ""
 
@@ -148,23 +120,16 @@ run_benchmark() {
         return
     fi
     
-    # Mode-specific setup
+    # Compile first
     local bytecode="${file%.qz}.qzb"
-    if [[ "$MODE" == "bytecode" ]]; then
-        # Compile first
-        if ! "$QUARTZ" --compile "$file" -o "$bytecode" > /dev/null 2>&1; then
-            echo -e "${RED}  [FAIL] $name - compilation failed${NC}"
-            return
-        fi
-        ((COMPILED_COUNT++)) || true
-        local run_cmd=("$QUARTZ" --run-bc "$bytecode")
-    else
-        local run_cmd=("$QUARTZ" --interp "$file")
+    if ! "$QUARTZ" --compile "$file" -o "$bytecode" > /dev/null 2>&1; then
+        echo -e "${RED}  [FAIL] $name - compilation failed${NC}"
+        return
     fi
     
     # Warmup runs
     for ((i=1; i<=WARMUP_RUNS; i++)); do
-        "${run_cmd[@]}" > /dev/null 2>&1 || true
+        "$QUARTZ" --run-bc "$bytecode" > /dev/null 2>&1 || true
     done
     
     # Timed runs using python for accurate timing (avoids bash integer overflow)
@@ -173,23 +138,13 @@ run_benchmark() {
     
     for ((i=1; i<=BENCHMARK_RUNS; i++)); do
         local elapsed_ms
-        if [[ "$MODE" == "bytecode" ]]; then
-            elapsed_ms=$(python3 -c "
+        elapsed_ms=$(python3 -c "
 import time, subprocess
 start = time.perf_counter()
 subprocess.run(['$QUARTZ', '--run-bc', '$bytecode'], capture_output=True)
 end = time.perf_counter()
 print(max(0, int((end - start) * 1000)))
 " 2>/dev/null)
-        else
-            elapsed_ms=$(python3 -c "
-import time, subprocess
-start = time.perf_counter()
-subprocess.run(['$QUARTZ', '--interp', '$file'], capture_output=True)
-end = time.perf_counter()
-print(max(0, int((end - start) * 1000)))
-" 2>/dev/null)
-        fi
         # Validate that we got a valid number
         if [[ ! "$elapsed_ms" =~ ^[0-9]+$ ]]; then
             elapsed_ms=0
@@ -306,12 +261,6 @@ if [[ -f "$RUN_RESULTS_DIR/results.csv" ]]; then
         avg=$(grep "^$cat," "$RUN_RESULTS_DIR/results.csv" 2>/dev/null | awk -F, '{sum+=$3; count++} END {if(count>0) printf "%d", sum/count; else print "N/A"}')
         [[ "$avg" != "N/A" && -n "$avg" ]] && printf "  %-15s %6d ms\n" "$cat" "$avg"
     done
-    
-    # Report bytecode statistics if in bytecode mode
-    if [[ "$MODE" == "bytecode" ]]; then
-        echo -e "${BLUE}Deleted $DELETED_COUNT .qzb file(s).${NC}"
-        echo -e "${BLUE}Compiled $COMPILED_COUNT benchmark(s).${NC}"
-    fi
 fi
 
 echo ""
