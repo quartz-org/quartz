@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <variant>  // For Value type
@@ -206,14 +207,16 @@ private:
         std::vector<size_t> patchSites;  // Offsets that need patching
     };
     std::unordered_map<size_t, Label> labels_;  // bytecode IP -> label
-    
     // Register allocation for local slots
     std::unordered_map<uint16_t, uint8_t> slotToReg_;   // slot -> register index (0=R14,1=R15)
     std::unordered_map<uint8_t, uint16_t> regToSlot_;   // register index -> slot
     std::vector<uint16_t> usedSlots_;                   // slots used in function
+    std::unordered_set<uint16_t> dirtySlots_;           // slots whose register value differs from memory
+
     
     // Internal compilation methods
     void analyzeSlotUsage(const bc::Function& fn);
+    void flushDirtySlots();
     void resetEmitState();
     void emitByte(uint8_t b);
     void emitBytes(const uint8_t* data, size_t len);
@@ -232,6 +235,11 @@ private:
     void emitSubRbxImm8(int8_t imm);
     void emitLoadLocal(uint16_t slot);
     void emitStoreLocal(uint16_t slot);
+    void emitLoadSlotToXmm(uint8_t xmmReg, uint16_t slot);
+    void emitStoreSlotFromXmm(uint8_t xmmReg, uint16_t slot);
+    void emitLoadHotSlots();
+    void emitStoreXmmToStack(uint8_t xmmReg);
+    void emitLoadXmmFromStack(uint8_t xmmReg);
     
     // Opcode compilation
     bool compileOpcode(const bc::Function& fn, const bc::Program& program,

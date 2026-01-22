@@ -12,6 +12,7 @@
 #include <cstring>
 #include <chrono>
 #include <algorithm>
+#include <cstdio>
 
 #ifdef QZ_JIT_DEBUG
 #include <iostream>
@@ -423,6 +424,7 @@ bool Compiler::canCompile(const bc::Function& fn) {
             case bc::OpCode::THROW_NEW:
             case bc::OpCode::DEF_FUNCTION:
             default:
+                fprintf(stderr, "[JIT] canCompile failed at ip=%zu opcode=%d\n", ip-1, static_cast<int>(opcode));
 #ifdef QZ_JIT_DEBUG
                 std::cerr << "[JIT] canCompile failed at ip=" << (ip-1) 
                           << " opcode=" << static_cast<int>(opcode) << std::endl;
@@ -514,96 +516,7 @@ void Compiler::analyzeSlotUsage(const bc::Function& fn) {
     slotToReg_.clear();
     regToSlot_.clear();
     usedSlots_.clear();
-    
-    std::unordered_map<uint16_t, uint32_t> slotCounts;
-    const auto& code = fn.code;
-    size_t ip = 0;
-    while (ip < code.size()) {
-        auto opcode = static_cast<bc::OpCode>(code[ip++]);
-        switch (opcode) {
-            case bc::OpCode::LOAD_SLOT:
-            case bc::OpCode::STORE_SLOT:
-            case bc::OpCode::INCREMENT_SLOT:
-            case bc::OpCode::DECREMENT_SLOT:
-            case bc::OpCode::LOAD_SLOT_PUSH_INT32:
-            case bc::OpCode::BINARY_OP_STORE_SLOT:
-            case bc::OpCode::LOOP_COND_SLOT_LT_INT32: {
-                uint16_t slot = 0;
-                if (opcode == bc::OpCode::LOAD_SLOT ||
-                    opcode == bc::OpCode::STORE_SLOT ||
-                    opcode == bc::OpCode::INCREMENT_SLOT ||
-                    opcode == bc::OpCode::DECREMENT_SLOT ||
-                    opcode == bc::OpCode::LOAD_SLOT_PUSH_INT32 ||
-                    opcode == bc::OpCode::BINARY_OP_STORE_SLOT) {
-                    std::memcpy(&slot, &code[ip], 2);
-                    ip += 2;
-                } else if (opcode == bc::OpCode::LOOP_COND_SLOT_LT_INT32) {
-                    std::memcpy(&slot, &code[ip], 2);
-                    ip += 2 + 4 + 4; // slot, limit, rel
-                }
-                slotCounts[slot]++;
-                break;
-            }
-            case bc::OpCode::LOAD_SLOT_0:
-            case bc::OpCode::STORE_SLOT_0:
-                slotCounts[0]++;
-                break;
-            default:
-                // skip immediates based on opcode (similar to canCompile)
-                // we don't need to track other opcodes
-                switch (opcode) {
-                    case bc::OpCode::PUSH_INT32:
-                        ip += 4;
-                        break;
-                    case bc::OpCode::PUSH_DOUBLE64:
-                        ip += 8;
-                        break;
-                    case bc::OpCode::PUSH_BOOL:
-                        ip += 1;
-                        break;
-                    case bc::OpCode::PUSH_STRING:
-                        ip += 4;
-                        break;
-                    case bc::OpCode::CALL_NAME:
-                        ip += 4 + 1;
-                        break;
-                    case bc::OpCode::CALL_NAME_0:
-                    case bc::OpCode::CALL_NAME_1:
-                    case bc::OpCode::CALL_NAME_2:
-                        ip += 4;
-                        break;
-                    case bc::OpCode::JUMP:
-                    case bc::OpCode::JUMP_IF_FALSE:
-                    case bc::OpCode::JUMP_IF_TRUE:
-                        ip += 4;
-                        break;
-                    default:
-                        // no immediates
-                        break;
-                }
-                break;
-        }
-    }
-    
-    // Collect used slots
-    for (const auto& [slot, count] : slotCounts) {
-        usedSlots_.push_back(slot);
-    }
-    
-    // Sort by frequency descending
-    std::sort(usedSlots_.begin(), usedSlots_.end(),
-              [&slotCounts](uint16_t a, uint16_t b) {
-                  return slotCounts[a] > slotCounts[b];
-              });
-    
-    // Assign registers to top 2 slots (if any)
-    const uint8_t availableRegisters[] = {0, 1}; // 0=R14, 1=R15
-    for (size_t i = 0; i < usedSlots_.size() && i < 2; ++i) {
-        uint16_t slot = usedSlots_[i];
-        uint8_t reg = availableRegisters[i];
-        slotToReg_[slot] = reg;
-        regToSlot_[reg] = slot;
-    }
+    // Disable caching for now to avoid bugs
 }
 
 // =============================================================================
@@ -700,6 +613,108 @@ void Compiler::emitStoreLocal(uint16_t slot) {
         emitByte((offset >> 16) & 0xFF);
         emitByte((offset >> 24) & 0xFF);
     }
+}
+
+// Emit: movdqu xmmN, [r12 + slot*16]  (load slot to XMM register)
+void Compiler::emitLoadSlotToXmm(uint8_t xmmReg, uint16_t slot) {
+    int32_t offset = static_cast<int32_t>(slot) * 16;
+    // F3 prefix for movdqu
+    emitByte(0xF3);
+    // REX prefix: 0x40 + REX.R (if xmmReg >= 8) + REX.B (for r12)
+    uint8_t rex = 0x40;
+    if (xmmReg >= 8) rex |= 0x04; // REX.R
+    rex |= 0x01; // REX.B for r12
+    emitByte(rex);
+    emitByte(0x0F);
+    emitByte(0x6F); // movdqu xmm, m128
+    // modrm and sib
+    uint8_t reg = xmmReg & 7;
+    if (offset == 0) {
+        emitByte(modrm(0, reg, 4)); // [r12]
+        emitByte(0x24); // SIB: base=r12
+    } else if (offset <= 127) {
+        emitByte(modrm(1, reg, 4)); // [r12 + disp8]
+        emitByte(0x24);
+        emitByte(static_cast<uint8_t>(offset));
+    } else {
+        emitByte(modrm(2, reg, 4)); // [r12 + disp32]
+        emitByte(0x24);
+        emitByte(offset & 0xFF);
+        emitByte((offset >> 8) & 0xFF);
+        emitByte((offset >> 16) & 0xFF);
+        emitByte((offset >> 24) & 0xFF);
+    }
+}
+
+// Emit: movdqu [r12 + slot*16], xmmN  (store slot from XMM register)
+void Compiler::emitStoreSlotFromXmm(uint8_t xmmReg, uint16_t slot) {
+    int32_t offset = static_cast<int32_t>(slot) * 16;
+    emitByte(0xF3);
+    uint8_t rex = 0x40;
+    if (xmmReg >= 8) rex |= 0x04; // REX.R
+    rex |= 0x01; // REX.B for r12
+    emitByte(rex);
+    emitByte(0x0F);
+    emitByte(0x7F); // movdqu m128, xmm
+    uint8_t reg = xmmReg & 7;
+    if (offset == 0) {
+        emitByte(modrm(0, reg, 4));
+        emitByte(0x24);
+    } else if (offset <= 127) {
+        emitByte(modrm(1, reg, 4));
+        emitByte(0x24);
+        emitByte(static_cast<uint8_t>(offset));
+    } else {
+        emitByte(modrm(2, reg, 4));
+        emitByte(0x24);
+        emitByte(offset & 0xFF);
+        emitByte((offset >> 8) & 0xFF);
+        emitByte((offset >> 16) & 0xFF);
+        emitByte((offset >> 24) & 0xFF);
+    }
+}
+
+// Emit loads for all hot slots assigned to registers
+void Compiler::emitLoadHotSlots() {
+    for (const auto& [slot, reg] : slotToReg_) {
+        emitLoadSlotToXmm(reg, slot);
+    }
+}
+
+// Flush dirty slots from registers back to memory
+void Compiler::flushDirtySlots() {
+    for (uint16_t slot : dirtySlots_) {
+        auto it = slotToReg_.find(slot);
+        if (it != slotToReg_.end()) {
+            emitStoreSlotFromXmm(it->second, slot);
+        }
+    }
+    dirtySlots_.clear();
+}
+
+// Emit: movdqu [rbx], xmmReg  (store XMM register to stack)
+void Compiler::emitStoreXmmToStack(uint8_t xmmReg) {
+    // F3 prefix
+    emitByte(0xF3);
+    // REX prefix if xmmReg >= 8
+    if (xmmReg >= 8) {
+        emitByte(0x44); // REX.R = 1, others 0
+    }
+    emitByte(0x0F);
+    emitByte(0x11); // movdqu m128, xmm
+    // modrm: mod=00, reg=xmmReg, r/m=011 (rbx)
+    emitByte((xmmReg & 7) << 3 | 0x03);
+}
+
+// Emit: movdqu xmmReg, [rbx]  (load XMM register from stack)
+void Compiler::emitLoadXmmFromStack(uint8_t xmmReg) {
+    emitByte(0xF3);
+    if (xmmReg >= 8) {
+        emitByte(0x44); // REX.R = 1
+    }
+    emitByte(0x0F);
+    emitByte(0x6F); // movdqu xmm, m128
+    emitByte((xmmReg & 7) << 3 | 0x03);
 }
 
 #endif // JIT_ARCH_X86_64
@@ -887,21 +902,27 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
                 ip += 2;
             }
             
-            int32_t offset = static_cast<int32_t>(slot) * 16;
-            
-            // movdqu xmm0, [r12 + offset]  (load 16-byte JITValue)
-            emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x6F);
-            if (offset == 0) {
-                emitByte(0x04); emitByte(0x24);  // [r12]
-            } else if (offset <= 127) {
-                emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+            auto it = slotToReg_.find(slot);
+            if (it != slotToReg_.end()) {
+                // Slot is in XMM register, store it to stack
+                emitStoreXmmToStack(it->second);
             } else {
-                emitByte(0x84); emitByte(0x24);
-                emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
-                emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                int32_t offset = static_cast<int32_t>(slot) * 16;
+                
+                // movdqu xmm0, [r12 + offset]  (load 16-byte JITValue)
+                emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x6F);
+                if (offset == 0) {
+                    emitByte(0x04); emitByte(0x24);  // [r12]
+                } else if (offset <= 127) {
+                    emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+                } else {
+                    emitByte(0x84); emitByte(0x24);
+                    emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
+                    emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                }
+                // movdqu [rbx], xmm0
+                emitByte(0xF3); emitByte(0x0F); emitByte(0x11); emitByte(0x03);
             }
-            // movdqu [rbx], xmm0
-            emitByte(0xF3); emitByte(0x0F); emitByte(0x11); emitByte(0x03);
             
             // add rbx, 16
             emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
@@ -917,23 +938,31 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
                 ip += 2;
             }
             
-            int32_t offset = static_cast<int32_t>(slot) * 16;
-            
             // sub rbx, 16 (pop)
             emitByte(0x48); emitByte(0x83); emitByte(0xEB); emitByte(0x10);
             
-            // movdqu xmm0, [rbx]  (load 16-byte JITValue from stack)
-            emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x03);
-            // movdqu [r12 + offset], xmm0  (store to local)
-            emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x11);
-            if (offset == 0) {
-                emitByte(0x04); emitByte(0x24);  // [r12]
-            } else if (offset <= 127) {
-                emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+            auto it = slotToReg_.find(slot);
+            if (it != slotToReg_.end()) {
+                // Slot is in XMM register, load value from stack into register and mark dirty
+                uint8_t xmmReg = it->second;
+                emitLoadXmmFromStack(xmmReg);
+                dirtySlots_.insert(slot);
+                // Do NOT store to memory yet (deferred until flush)
             } else {
-                emitByte(0x84); emitByte(0x24);
-                emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
-                emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                int32_t offset = static_cast<int32_t>(slot) * 16;
+                // movdqu xmm0, [rbx]  (load 16-byte JITValue from stack)
+                emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x03);
+                // movdqu [r12 + offset], xmm0  (store to local)
+                emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x11);
+                if (offset == 0) {
+                    emitByte(0x04); emitByte(0x24);  // [r12]
+                } else if (offset <= 127) {
+                    emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+                } else {
+                    emitByte(0x84); emitByte(0x24);
+                    emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
+                    emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                }
             }
             
             stackDelta--;
@@ -1202,6 +1231,7 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
         }
         
         case bc::OpCode::JUMP: {
+            flushDirtySlots();
             int32_t rel;
             std::memcpy(&rel, &code[ip], 4);
             ip += 4;
@@ -1212,6 +1242,7 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
         }
         
         case bc::OpCode::JUMP_IF_FALSE: {
+            flushDirtySlots();
             int32_t rel;
             std::memcpy(&rel, &code[ip], 4);
             ip += 4;
@@ -1236,6 +1267,7 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
         }
         
         case bc::OpCode::JUMP_IF_TRUE: {
+            flushDirtySlots();
             int32_t rel;
             std::memcpy(&rel, &code[ip], 4);
             ip += 4;
@@ -1260,6 +1292,7 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
         }
         
         case bc::OpCode::LOOP_COND_SLOT_LT_INT32: {
+            flushDirtySlots();
             // Optimized loop condition: if slot < limit, jump to target
             uint16_t slot;
             int32_t limit;
@@ -1404,31 +1437,59 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
                     break;
             }
             
-            // Store to slot
-            int32_t offset = static_cast<int32_t>(slot) * 16;
-            // mov [r12 + offset], rax
-            emitByte(0x49); emitByte(0x89);
-            if (offset == 0) {
-                emitByte(0x04); emitByte(0x24);
-            } else if (offset <= 127) {
-                emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+            // Check if slot is cached in XMM register
+            auto it = slotToReg_.find(slot);
+            if (it != slotToReg_.end()) {
+                // Slot is cached in XMM register
+                uint8_t xmmReg = it->second;
+                
+                // Store result (RAX) to temporary memory [r14] and tag 0
+                // mov [r14], rax
+                emitByte(0x49); emitByte(0x89); emitByte(0x04); emitByte(0x26);
+                // mov byte [r14+8], 0  (TAG_INT)
+                emitByte(0x41); emitByte(0xC6); emitByte(0x44); emitByte(0x26); emitByte(0x08); emitByte(0x00);
+                
+                // Load into XMM register
+                // movdqu xmmN, [r14]
+                uint8_t reg = xmmReg & 7;
+                uint8_t rex = 0x40;
+                if (xmmReg >= 8) rex |= 0x04; // REX.R
+                rex |= 0x01; // REX.B for r14
+                emitByte(rex);
+                emitByte(0x0F);
+                emitByte(0x6F); // movdqu xmm, m128
+                emitByte(modrm(0, reg, 4)); // [r14] with SIB
+                emitByte(0x26); // SIB: base=r14, index=none
+                
+                // Mark slot dirty (register value differs from memory)
+                dirtySlots_.insert(slot);
             } else {
-                emitByte(0x84); emitByte(0x24);
-                emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
-                emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                // Slot not cached, store to memory as usual
+                int32_t offset = static_cast<int32_t>(slot) * 16;
+                // mov [r12 + offset], rax
+                emitByte(0x49); emitByte(0x89);
+                if (offset == 0) {
+                    emitByte(0x04); emitByte(0x24);
+                } else if (offset <= 127) {
+                    emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+                } else {
+                    emitByte(0x84); emitByte(0x24);
+                    emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
+                    emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                }
+                // Store tag (TAG_INT = 0)
+                // mov byte [r12 + offset + 8], 0
+                emitByte(0x41); emitByte(0xC6);
+                if (offset + 8 <= 127) {
+                    emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset + 8));
+                } else {
+                    emitByte(0x84); emitByte(0x24);
+                    int32_t tagOff = offset + 8;
+                    emitByte(tagOff & 0xFF); emitByte((tagOff >> 8) & 0xFF);
+                    emitByte((tagOff >> 16) & 0xFF); emitByte((tagOff >> 24) & 0xFF);
+                }
+                emitByte(0x00);  // TAG_INT
             }
-            // Store tag (TAG_INT = 0)
-            // mov byte [r12 + offset + 8], 0
-            emitByte(0x41); emitByte(0xC6);
-            if (offset + 8 <= 127) {
-                emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset + 8));
-            } else {
-                emitByte(0x84); emitByte(0x24);
-                int32_t tagOff = offset + 8;
-                emitByte(tagOff & 0xFF); emitByte((tagOff >> 8) & 0xFF);
-                emitByte((tagOff >> 16) & 0xFF); emitByte((tagOff >> 24) & 0xFF);
-            }
-            emitByte(0x00);  // TAG_INT
             
             stackDelta -= 2;
             break;
@@ -1551,7 +1612,13 @@ CompiledFunction* Compiler::compile(const bc::Program& program, uint32_t functio
     if (!canCompile(fn)) {
         return nullptr;
     }
-    
+
+    // Analyze slot usage and allocate registers for hot slots
+    analyzeSlotUsage(fn);
+#ifdef QZ_JIT_DEBUG
+    std::cerr << "[JIT] compile: analyzed slot usage for function " << functionIndex << std::endl;
+#endif
+
     auto startTime = std::chrono::high_resolution_clock::now();
     
     // Reset emission state
@@ -1559,6 +1626,9 @@ CompiledFunction* Compiler::compile(const bc::Program& program, uint32_t functio
     
     // Emit prologue
     emitPrologue();
+
+    // Load hot slots into XMM registers
+    emitLoadHotSlots();
     
     // Compile bytecode
     size_t ip = 0;
@@ -1571,6 +1641,8 @@ CompiledFunction* Compiler::compile(const bc::Program& program, uint32_t functio
         }
     }
     
+    // Flush dirty slots back to memory
+    flushDirtySlots();
     // Emit epilogue
     emitEpilogue();
     
