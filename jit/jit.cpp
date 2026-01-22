@@ -1453,22 +1453,27 @@ CompiledFunction* Engine::getCompiled(const bc::Program& program, uint32_t funct
         return it->second.get();
     }
     
-    // Should we compile?
-    bool needCompile = shouldCompile(functionIndex);
-    if (!needCompile) {
-        // Check if function contains a loop and is compilable
-        if (functionIndex < program.functions.size()) {
-            const bc::Function& fn = program.functions[functionIndex];
-            if (hasLoop(fn) && compiler_->canCompile(fn)) {
-                // Force compilation for loops
+    // Check if function contains a loop and is compilable FIRST (before threshold check)
+    // This ensures loop-heavy functions get JIT compiled immediately for maximum performance
+    bool hasLoopOp = false;
+    bool isCompilable = false;
+    if (functionIndex < program.functions.size()) {
+        const bc::Function& fn = program.functions[functionIndex];
+        hasLoopOp = hasLoop(fn);
+        isCompilable = compiler_->canCompile(fn);
+        
+        if (hasLoopOp && isCompilable) {
+            // Force compilation for loops - this is the primary JIT use case
 #ifdef QZ_JIT_DEBUG
-                std::cerr << "[JIT] Loop detected in function #" << functionIndex << ", forcing compilation" << std::endl;
+            std::cerr << "[JIT] Loop detected in function #" << functionIndex 
+                      << " (" << fn.code.size() << " bytes), forcing immediate compilation" << std::endl;
 #endif
-                callCounts_[functionIndex] = threshold_;
-                needCompile = true;
-            }
+            callCounts_[functionIndex] = threshold_;
         }
     }
+    
+    // Should we compile?
+    bool needCompile = shouldCompile(functionIndex);
     if (!needCompile) {
         return nullptr;
     }

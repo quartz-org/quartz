@@ -158,8 +158,15 @@ bool BytecodeVM::tryJITExecute(uint32_t functionIndex, const std::vector<Value>&
     // Check if we have compiled code or should compile now
     qz::jit::CompiledFunction* compiled = jitEngine_->getCompiled(*prog, functionIndex);
     if (!compiled || !compiled->isValid) {
+#ifdef QZ_JIT_DEBUG
+        std::cerr << "[JIT] Function #" << functionIndex << " not compiled, falling back to interpreter" << std::endl;
+#endif
         return false;  // Fall back to interpreter
     }
+    
+#ifdef QZ_JIT_DEBUG
+    std::cerr << "[JIT] Executing function #" << functionIndex << " with JIT-compiled code" << std::endl;
+#endif
     
     const bc::Function& fn = prog->functions[functionIndex];
     
