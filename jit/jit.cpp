@@ -187,6 +187,8 @@ void Compiler::emitPrologue() {
     emitByte(0x41); emitByte(0x55);
     // push r14 (scratch)
     emitByte(0x41); emitByte(0x56);
+    // mov r14, rdi  (save original stack base)
+    emitByte(0x49); emitByte(0x89); emitByte(0xFE);
     
     // mov rbx, rdi  (stack ptr = arg0)
     emitByte(0x48); emitByte(0x89); emitByte(0xFB);
@@ -790,8 +792,8 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             
             int32_t offset = static_cast<int32_t>(slot) * 16;
             
-            // mov rax, [r12 + offset]  (load bits from local)
-            emitByte(0x49); emitByte(0x8B);  // REX.WB mov rax, [r12+...]
+            // movdqu xmm0, [r12 + offset]  (load 16-byte JITValue)
+            emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x6F);
             if (offset == 0) {
                 emitByte(0x04); emitByte(0x24);  // [r12]
             } else if (offset <= 127) {
@@ -801,21 +803,8 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
                 emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
                 emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
             }
-            // mov [rbx], rax
-            emitByte(0x48); emitByte(0x89); emitByte(0x03);
-            
-            // mov al, [r12 + offset + 8]  (load tag)
-            emitByte(0x41); emitByte(0x8A);
-            if (offset + 8 <= 127) {
-                emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset + 8));
-            } else {
-                emitByte(0x84); emitByte(0x24);
-                int32_t tagOff = offset + 8;
-                emitByte(tagOff & 0xFF); emitByte((tagOff >> 8) & 0xFF);
-                emitByte((tagOff >> 16) & 0xFF); emitByte((tagOff >> 24) & 0xFF);
-            }
-            // mov [rbx+8], al
-            emitByte(0x88); emitByte(0x43); emitByte(0x08);
+            // movdqu [rbx], xmm0
+            emitByte(0xF3); emitByte(0x0F); emitByte(0x11); emitByte(0x03);
             
             // add rbx, 16
             emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
@@ -836,31 +825,18 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             // sub rbx, 16 (pop)
             emitByte(0x48); emitByte(0x83); emitByte(0xEB); emitByte(0x10);
             
-            // mov rax, [rbx]  (load bits from stack)
-            emitByte(0x48); emitByte(0x8B); emitByte(0x03);
-            // mov [r12 + offset], rax  (store to local)
-            emitByte(0x49); emitByte(0x89);
+            // movdqu xmm0, [rbx]  (load 16-byte JITValue from stack)
+            emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x03);
+            // movdqu [r12 + offset], xmm0  (store to local)
+            emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x11);
             if (offset == 0) {
-                emitByte(0x04); emitByte(0x24);
+                emitByte(0x04); emitByte(0x24);  // [r12]
             } else if (offset <= 127) {
                 emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
             } else {
                 emitByte(0x84); emitByte(0x24);
                 emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
                 emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
-            }
-            
-            // mov al, [rbx+8]  (load tag)
-            emitByte(0x8A); emitByte(0x43); emitByte(0x08);
-            // mov [r12 + offset + 8], al
-            emitByte(0x41); emitByte(0x88);
-            if (offset + 8 <= 127) {
-                emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset + 8));
-            } else {
-                emitByte(0x84); emitByte(0x24);
-                int32_t tagOff = offset + 8;
-                emitByte(tagOff & 0xFF); emitByte((tagOff >> 8) & 0xFF);
-                emitByte((tagOff >> 16) & 0xFF); emitByte((tagOff >> 24) & 0xFF);
             }
             
             stackDelta--;
@@ -1432,6 +1408,19 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
         }
         
         case bc::OpCode::RETURN_VALUE:
+            // Move top value (at [rbx - 16]) to original stack base (r14)
+            // movdqu xmm0, [rbx - 16]
+            emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x43); emitByte(0xF0);
+            // movups [r14], xmm0
+            emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x11); emitByte(0x06);
+            // Set stack pointer to point after result (base + 16)
+            // mov rbx, r14
+            emitByte(0x4C); emitByte(0x89); emitByte(0xF3);
+            // add rbx, 16
+            emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
+            emitEpilogue();
+            break;
+        
         case bc::OpCode::RETURN_VOID:
             // Just emit epilogue - result is already on stack
             emitEpilogue();
