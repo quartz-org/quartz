@@ -41,6 +41,7 @@ EXTENSIONS="system_io,system_collection,system_runtime"
 VM_STACK_SIZE="65536"
 VM_DEBUG_TRACE="false"
 VM_INSTRUCTION_CACHE="true"
+VM_COMPUTED_GOTOS="true"
 HEAP_INITIAL_MB="64"
 HEAP_MAX_MB="0"
 PLATFORM=""
@@ -79,6 +80,7 @@ parse_config() {
                 VM_STACK_SIZE) VM_STACK_SIZE="$value" ;;
                 VM_DEBUG_TRACE) VM_DEBUG_TRACE="$value" ;;
                 VM_INSTRUCTION_CACHE) VM_INSTRUCTION_CACHE="$value" ;;
+                VM_COMPUTED_GOTOS) VM_COMPUTED_GOTOS="$value" ;;
                 HEAP_INITIAL_MB) HEAP_INITIAL_MB="$value" ;;
                 HEAP_MAX_MB) HEAP_MAX_MB="$value" ;;
                 PLATFORM) PLATFORM="$value" ;;
@@ -277,7 +279,11 @@ build_cmake() {
     if [[ "$VM_INSTRUCTION_CACHE" == "true" ]]; then
         CMAKE_FLAGS="$CMAKE_FLAGS -DQZ_VM_INSTRUCTION_CACHE=ON"
     fi
-    
+
+    if [[ "$VM_COMPUTED_GOTOS" == "true" ]]; then
+        CMAKE_FLAGS="$CMAKE_FLAGS -DQZ_VM_COMPUTED_GOTOS=ON"
+    fi
+
     # Memory configuration
     CMAKE_FLAGS="$CMAKE_FLAGS -DQZ_HEAP_INITIAL_MB=${HEAP_INITIAL_MB}"
     CMAKE_FLAGS="$CMAKE_FLAGS -DQZ_HEAP_MAX_MB=${HEAP_MAX_MB}"

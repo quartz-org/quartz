@@ -20,7 +20,9 @@
 // Uses labels-as-values extension for direct threading dispatch.
 // Falls back to switch dispatch on unsupported compilers.
 
-#if defined(__GNUC__) || defined(__clang__)
+// Computed gotos are enabled by default on GCC/Clang, but can be disabled
+// via QZ_VM_COMPUTED_GOTOS=0 build flag (set in build.conf or CMake)
+#if (defined(__GNUC__) || defined(__clang__)) && (!defined(QZ_VM_COMPUTED_GOTOS) || QZ_VM_COMPUTED_GOTOS)
     #define VM_USE_COMPUTED_GOTO 1
     #define VM_DISPATCH_LABEL(name) label_##name
     #define VM_DISPATCH_DECL(name) VM_DISPATCH_LABEL(name):

@@ -1153,10 +1153,70 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
         }
 
         try {
+#if VM_USE_COMPUTED_GOTO
+    static const void* dispatch_table[] = {
+        &&label_NOP,
+        &&label_PUSH_INT32,
+        &&label_PUSH_DOUBLE64,
+        &&label_PUSH_BOOL,
+        &&label_PUSH_STRING,
+        &&label_POP,
+        &&label_LOAD_VAR,
+        &&label_STORE_VAR,
+        &&label_DECLARE_ARRAY,
+        &&label_DECLARE_DICT,
+        &&label_DECLARE_LAMBDA,
+        &&label_BINARY_OP,
+        &&label_UNARY_OP,
+        &&label_INDEX_GET,
+        &&label_JUMP,
+        &&label_JUMP_IF_FALSE,
+        &&label_JUMP_IF_TRUE,
+        &&label_CALL_NAME,
+        &&label_NEW_OBJECT,
+        &&label_MAKE_LAMBDA,
+        &&label_DEF_FUNCTION,
+        &&label_TRY_PUSH,
+        &&label_TRY_POP,
+        &&label_CATCH_CLEAR,
+        &&label_THROW_VALUE,
+        &&label_THROW_NEW,
+        &&label_FINALLY_END,
+        &&label_DEF_CLASS,
+        &&label_DEF_INTERFACE,
+        &&label_SET_CURRENT_MODULE,
+        &&label_CLEAR_CURRENT_MODULE,
+        &&label_RETURN_VALUE,
+        &&label_RETURN_VOID,
+        &&label_LOAD_SLOT,
+        &&label_STORE_SLOT,
+        &&label_MAKE_ARRAY_EXPR,
+        &&label_MAKE_DICT_EXPR,
+        &&label_PUSH_INT32_0,
+        &&label_PUSH_INT32_1,
+        &&label_PUSH_INT32_NEG1,
+        &&label_PUSH_TRUE,
+        &&label_PUSH_FALSE,
+        &&label_PUSH_NULL,
+        &&label_LOAD_SLOT_0,
+        &&label_STORE_SLOT_0,
+        &&label_CALL_NAME_0,
+        &&label_CALL_NAME_1,
+        &&label_CALL_NAME_2,
+        &&label_INCREMENT_SLOT,
+        &&label_DECREMENT_SLOT,
+        &&label_LOAD_SLOT_PUSH_INT32,
+        &&label_BINARY_OP_STORE_SLOT,
+        &&label_LOOP_COND_SLOT_LT_INT32,
+    };
+    goto *dispatch_table[static_cast<uint8_t>(op)];
+#endif
             switch (op) {
+            label_NOP:
             case bc::OpCode::NOP:
                 break;
 
+            label_PUSH_INT32:
             case bc::OpCode::PUSH_INT32: {
                 int32_t v;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1171,6 +1231,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_PUSH_DOUBLE64:
             case bc::OpCode::PUSH_DOUBLE64: {
                 double v = readF64(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1178,6 +1239,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_PUSH_BOOL:
             case bc::OpCode::PUSH_BOOL: {
                 uint8_t b;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1191,6 +1253,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_PUSH_STRING:
             case bc::OpCode::PUSH_STRING: {
                 uint32_t sidx;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1204,10 +1267,12 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_POP:
             case bc::OpCode::POP:
                 (void)pop();
                 break;
 
+            label_LOAD_VAR:
             case bc::OpCode::LOAD_VAR: {
                 uint32_t nidx;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1246,6 +1311,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_LOAD_SLOT:
             case bc::OpCode::LOAD_SLOT: {
                 uint16_t slot;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1262,6 +1328,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_STORE_VAR:
             case bc::OpCode::STORE_VAR: {
                 uint32_t nidx;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1276,6 +1343,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_STORE_SLOT:
             case bc::OpCode::STORE_SLOT: {
                 uint16_t slot;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1309,6 +1377,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_DECLARE_ARRAY:
             case bc::OpCode::DECLARE_ARRAY: {
                 uint32_t nidx = readU32(code, ip, &ok);
                 uint16_t count = readU16(code, ip, &ok);
@@ -1327,6 +1396,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_DECLARE_DICT:
             case bc::OpCode::DECLARE_DICT: {
                 uint32_t nidx = readU32(code, ip, &ok);
                 uint16_t count = readU16(code, ip, &ok);
@@ -1352,6 +1422,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_MAKE_ARRAY_EXPR:
             case bc::OpCode::MAKE_ARRAY_EXPR: {
                 uint16_t count = readU16(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1365,6 +1436,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_MAKE_DICT_EXPR:
             case bc::OpCode::MAKE_DICT_EXPR: {
                 uint16_t count = readU16(code, ip, &ok);
                 std::vector<std::string> keys;
@@ -1387,6 +1459,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_DECLARE_LAMBDA:
             case bc::OpCode::DECLARE_LAMBDA: {
                 uint32_t nidx = readU32(code, ip, &ok);
                 uint32_t fidx = readU32(code, ip, &ok);
@@ -1407,6 +1480,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_MAKE_LAMBDA:
             case bc::OpCode::MAKE_LAMBDA: {
                 uint32_t fidx = readU32(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1423,6 +1497,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_BINARY_OP:
             case bc::OpCode::BINARY_OP: {
                 bc::BinaryOp bop = (bc::BinaryOp)readU8(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1455,6 +1530,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_UNARY_OP:
             case bc::OpCode::UNARY_OP: {
                 bc::UnaryOp uop = (bc::UnaryOp)readU8(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1463,6 +1539,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_INDEX_GET:
             case bc::OpCode::INDEX_GET: {
                 uint32_t nidx = readU32(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1472,6 +1549,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_JUMP:
             case bc::OpCode::JUMP: {
                 size_t target;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1491,6 +1569,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_JUMP_IF_FALSE:
             case bc::OpCode::JUMP_IF_FALSE: {
                 size_t target;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1515,6 +1594,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_JUMP_IF_TRUE:
             case bc::OpCode::JUMP_IF_TRUE: {
                 size_t target;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1539,6 +1619,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_CALL_NAME:
             case bc::OpCode::CALL_NAME: {
                 uint32_t nidx;
                 uint8_t argc;
@@ -1562,6 +1643,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_NEW_OBJECT:
             case bc::OpCode::NEW_OBJECT: {
                 uint32_t nidx;
                 uint8_t argc;
@@ -1584,6 +1666,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_TRY_PUSH:
             case bc::OpCode::TRY_PUSH: {
                 uint32_t catchIpAbs = readU32(code, ip, &ok);
                 uint32_t finallyIpAbs = readU32(code, ip, &ok);
@@ -1610,10 +1693,12 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_TRY_POP:
             case bc::OpCode::TRY_POP:
                 if (!tryStack.empty()) tryStack.pop_back();
                 break;
 
+            label_CATCH_CLEAR:
             case bc::OpCode::CATCH_CLEAR: {
                 std::string varName = str(readU32(code, ip, &ok));
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1621,6 +1706,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_THROW_VALUE:
             case bc::OpCode::THROW_VALUE: {
                 Value v = pop();
                 std::string msg = to_string(v);
@@ -1628,6 +1714,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_THROW_NEW:
             case bc::OpCode::THROW_NEW: {
                 uint32_t tIdx = readU32(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1637,6 +1724,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_FINALLY_END:
             case bc::OpCode::FINALLY_END: {
                 if (pendingRethrow) {
                     pendingRethrow = false;
@@ -1645,16 +1733,19 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_DEF_CLASS:
             case bc::OpCode::DEF_CLASS: {
                 if (!execDefClass(code, ip, error)) return Value{};
                 break;
             }
 
+            label_DEF_INTERFACE:
             case bc::OpCode::DEF_INTERFACE: {
                 if (!execDefInterface(code, ip, error)) return Value{};
                 break;
             }
 
+            label_DEF_FUNCTION:
             case bc::OpCode::DEF_FUNCTION: {
                 // Register a user-defined function
                 uint32_t nameIdx = readU32(code, ip, &ok);
@@ -1667,6 +1758,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_SET_CURRENT_MODULE:
             case bc::OpCode::SET_CURRENT_MODULE: {
                 uint32_t sidx = readU32(code, ip, &ok);
                 if (!ok) throw std::runtime_error("Bytecode decode error");
@@ -1674,10 +1766,12 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
 
+            label_CLEAR_CURRENT_MODULE:
             case bc::OpCode::CLEAR_CURRENT_MODULE:
                 currentLoadingModule.clear();
                 break;
 
+            label_RETURN_VALUE:
             case bc::OpCode::RETURN_VALUE: {
                 Value rv = pop();
                 // ARC: Retain return value before scope switch
@@ -1690,6 +1784,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 return rv;
             }
 
+            label_RETURN_VOID:
             case bc::OpCode::RETURN_VOID:
                 // Flush deferred releases before returning
                 flushDeferredReleases();
@@ -1702,30 +1797,37 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
             // Specialized opcodes for common patterns (performance optimization)
             // ====================================================================
             
+            label_PUSH_INT32_0:
             case bc::OpCode::PUSH_INT32_0:
                 push(Value(0));
                 break;
                 
+            label_PUSH_INT32_1:
             case bc::OpCode::PUSH_INT32_1:
                 push(Value(1));
                 break;
                 
+            label_PUSH_INT32_NEG1:
             case bc::OpCode::PUSH_INT32_NEG1:
                 push(Value(-1));
                 break;
                 
+            label_PUSH_TRUE:
             case bc::OpCode::PUSH_TRUE:
                 push(Value(true));
                 break;
                 
+            label_PUSH_FALSE:
             case bc::OpCode::PUSH_FALSE:
                 push(Value(false));
                 break;
                 
+            label_PUSH_NULL:
             case bc::OpCode::PUSH_NULL:
                 push(Value(std::string("")));
                 break;
                 
+            label_LOAD_SLOT_0:
             case bc::OpCode::LOAD_SLOT_0:
                 if (VM_UNLIKELY(locals.empty())) {
                     throw LanguageException("RuntimeError", "Local slot 0 out of bounds");
@@ -1733,6 +1835,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 push(locals[0]);
                 break;
                 
+            label_STORE_SLOT_0:
             case bc::OpCode::STORE_SLOT_0: {
                 if (VM_UNLIKELY(locals.empty())) {
                     throw LanguageException("RuntimeError", "Local slot 0 out of bounds");
@@ -1752,6 +1855,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_CALL_NAME_0:
             case bc::OpCode::CALL_NAME_0: {
                 uint32_t nidx;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1768,6 +1872,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_CALL_NAME_1:
             case bc::OpCode::CALL_NAME_1: {
                 uint32_t nidx;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1786,6 +1891,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_CALL_NAME_2:
             case bc::OpCode::CALL_NAME_2: {
                 uint32_t nidx;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1806,6 +1912,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_INCREMENT_SLOT:
             case bc::OpCode::INCREMENT_SLOT: {
                 uint16_t slot;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1833,6 +1940,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_DECREMENT_SLOT:
             case bc::OpCode::DECREMENT_SLOT: {
                 uint16_t slot;
                 if (VM_LIKELY(meta != nullptr)) {
@@ -1860,6 +1968,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_LOAD_SLOT_PUSH_INT32:
             case bc::OpCode::LOAD_SLOT_PUSH_INT32: {
                 uint16_t slot;
                 int32_t value;
@@ -1881,6 +1990,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_BINARY_OP_STORE_SLOT:
             case bc::OpCode::BINARY_OP_STORE_SLOT: {
                 uint8_t opByte;
                 uint16_t slot;
@@ -1940,6 +2050,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 break;
             }
             
+            label_LOOP_COND_SLOT_LT_INT32:
             case bc::OpCode::LOOP_COND_SLOT_LT_INT32: {
                 // Super-instruction: slot < constant ? continue : jump
                 // Fuses: LOAD_SLOT + PUSH_INT32 + BINARY_OP(LT) + JUMP_IF_FALSE
