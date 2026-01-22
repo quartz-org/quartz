@@ -516,7 +516,119 @@ void Compiler::analyzeSlotUsage(const bc::Function& fn) {
     slotToReg_.clear();
     regToSlot_.clear();
     usedSlots_.clear();
-    // Disable caching for now to avoid bugs
+    
+    // Count slot usage frequency
+    std::unordered_map<uint16_t, int> slotCounts;
+    const auto& code = fn.code;
+    size_t ip = 0;
+    while (ip < code.size()) {
+        auto opcode = static_cast<bc::OpCode>(code[ip++]);
+        // skip immediates based on opcode
+        switch (opcode) {
+            case bc::OpCode::PUSH_INT32:
+                ip += 4;
+                break;
+            case bc::OpCode::PUSH_DOUBLE64:
+                ip += 8;
+                break;
+            case bc::OpCode::PUSH_BOOL:
+                ip += 1;
+                break;
+            case bc::OpCode::PUSH_STRING:
+                ip += 4;
+                break;
+            case bc::OpCode::LOAD_VAR:
+            case bc::OpCode::STORE_VAR:
+            case bc::OpCode::CALL_NAME:
+            case bc::OpCode::CALL_NAME_0:
+            case bc::OpCode::CALL_NAME_1:
+            case bc::OpCode::CALL_NAME_2:
+            case bc::OpCode::NEW_OBJECT:
+            case bc::OpCode::DEF_FUNCTION:
+            case bc::OpCode::INDEX_GET:
+            case bc::OpCode::DEF_CLASS:
+            case bc::OpCode::DEF_INTERFACE:
+            case bc::OpCode::TRY_PUSH:
+            case bc::OpCode::THROW_NEW:
+            case bc::OpCode::SET_CURRENT_MODULE:
+                ip += 4;
+                break;
+            case bc::OpCode::DECLARE_ARRAY:
+            case bc::OpCode::DECLARE_DICT:
+            case bc::OpCode::DECLARE_LAMBDA:
+            case bc::OpCode::MAKE_LAMBDA:
+            case bc::OpCode::MAKE_ARRAY_EXPR:
+            case bc::OpCode::MAKE_DICT_EXPR:
+                // variable size, skip minimal to avoid misreading
+                // For simplicity, assume no caching for these
+                ip = code.size(); // break out of loop
+                break;
+            case bc::OpCode::LOAD_SLOT:
+            case bc::OpCode::STORE_SLOT:
+            case bc::OpCode::INCREMENT_SLOT:
+            case bc::OpCode::DECREMENT_SLOT:
+            case bc::OpCode::LOAD_SLOT_PUSH_INT32:
+            case bc::OpCode::BINARY_OP_STORE_SLOT:
+                {
+                    uint16_t slot;
+                    std::memcpy(&slot, &code[ip], 2);
+                    slotCounts[slot]++;
+                    ip += 2;
+                }
+                break;
+            case bc::OpCode::LOAD_SLOT_0:
+            case bc::OpCode::STORE_SLOT_0:
+                slotCounts[0]++;
+                break;
+            case bc::OpCode::LOOP_COND_SLOT_LT_INT32:
+                // slot is in immediate bytes 0-1
+                {
+                    uint16_t slot;
+                    std::memcpy(&slot, &code[ip], 2);
+                    slotCounts[slot]++;
+                    ip += 2 + 4 + 4; // slot, limit, rel
+                }
+                break;
+            case bc::OpCode::JUMP:
+            case bc::OpCode::JUMP_IF_FALSE:
+            case bc::OpCode::JUMP_IF_TRUE:
+                ip += 4;
+                break;
+            case bc::OpCode::BINARY_OP:
+            case bc::OpCode::UNARY_OP:
+                ip += 1;
+                break;
+            default:
+                // no immediates
+                break;
+        }
+    }
+    
+    // Sort slots by frequency
+    std::vector<std::pair<uint16_t, int>> sorted(slotCounts.begin(), slotCounts.end());
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    
+#ifdef QZ_JIT_DEBUG
+    std::cerr << "[JIT] Slot usage analysis:" << std::endl;
+    for (const auto& [slot, count] : sorted) {
+        std::cerr << "  slot " << slot << ": " << count << " accesses" << std::endl;
+    }
+#endif
+    
+    // Assign registers to up to 4 most used slots
+    constexpr uint8_t kMaxCachedSlots = 4;
+    uint8_t nextReg = 1; // start from xmm1 (xmm0 used for temporaries)
+    for (size_t i = 0; i < sorted.size() && i < kMaxCachedSlots; ++i) {
+        uint16_t slot = sorted[i].first;
+        slotToReg_[slot] = nextReg;
+        regToSlot_[nextReg] = slot;
+        usedSlots_.push_back(slot);
+#ifdef QZ_JIT_DEBUG
+        std::cerr << "[JIT]   slot " << slot << " -> xmm" << static_cast<int>(nextReg) << std::endl;
+#endif
+        ++nextReg;
+    }
 }
 
 // =============================================================================
