@@ -329,6 +329,7 @@ bool Compiler::canCompile(const bc::Function& fn) {
     
     while (ip < code.size()) {
         auto opcode = static_cast<bc::OpCode>(code[ip++]);
+        fprintf(stderr, "[JIT] canCompile ip=%zu opcode=%d\n", ip-1, static_cast<int>(opcode));
         
         switch (opcode) {
             // Supported opcodes - must match compileOpcode
@@ -405,6 +406,9 @@ bool Compiler::canCompile(const bc::Function& fn) {
             case bc::OpCode::DECLARE_LAMBDA:
                 ip += 4 + 4;  // u32 varName, u32 functionIndex
                 break;
+            case bc::OpCode::DEF_FUNCTION:
+                ip += 4 + 4;  // u32 nameStringIndex, u32 functionIndex
+                break;
                 
             // Unsupported - fall back to interpreter
             // These require runtime support or complex operations
@@ -422,7 +426,6 @@ bool Compiler::canCompile(const bc::Function& fn) {
             case bc::OpCode::TRY_POP:
             case bc::OpCode::THROW_VALUE:
             case bc::OpCode::THROW_NEW:
-            case bc::OpCode::DEF_FUNCTION:
             default:
                 fprintf(stderr, "[JIT] canCompile failed at ip=%zu opcode=%d\n", ip-1, static_cast<int>(opcode));
 #ifdef QZ_JIT_DEBUG
@@ -1695,7 +1698,12 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             // Just emit epilogue - result is already on stack
             emitEpilogue();
             break;
-        
+
+        case bc::OpCode::DEF_FUNCTION:
+            // Skip function definition (already registered by interpreter)
+            ip += 8; // u32 nameStringIndex, u32 functionIndex
+            break;
+
         default:
             // Unsupported opcode
             return false;
