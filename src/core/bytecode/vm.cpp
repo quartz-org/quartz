@@ -145,7 +145,7 @@ uint32_t BytecodeVM::jitThreshold() const {
     return jitThreshold_;
 }
 
-bool BytecodeVM::tryJITExecute(uint32_t functionIndex, const std::vector<Value>& args,
+bool BytecodeVM::tryJITExecute(uint32_t functionIndex, const Value* args, size_t argCount,
                                 Value& result, std::string* error) {
 #ifdef QZ_JIT_ENABLED
     if (!jitEnabled_ || !jitEngine_ || !prog) {
@@ -175,7 +175,7 @@ bool BytecodeVM::tryJITExecute(uint32_t functionIndex, const std::vector<Value>&
     std::vector<qz::jit::JITValue> jitLocals(fn.localNameStrings.size());
     
     // Convert arguments to JIT values and place in locals (param slots)
-    for (size_t i = 0; i < args.size() && i < fn.paramNameStrings.size(); ++i) {
+    for (size_t i = 0; i < argCount && i < fn.paramNameStrings.size(); ++i) {
         jitLocals[i] = qz::jit::valueToJIT(args[i]);
     }
     
@@ -192,6 +192,7 @@ bool BytecodeVM::tryJITExecute(uint32_t functionIndex, const std::vector<Value>&
 #else
     (void)functionIndex;
     (void)args;
+    (void)argCount;
     (void)result;
     (void)error;
     return false;  // JIT not compiled in
@@ -647,7 +648,7 @@ bool BytecodeVM::execDefClass(const std::vector<uint8_t>& code, size_t& ip, std:
     for (const auto& sf : staticFields) {
         std::string key = className + "::" + sf.name;
         if (sf.hasInit && sf.exprFn != bc::kInvalidIndex) {
-            Value v = runFunction(sf.exprFn, {}, nullptr, nullptr, error);
+            Value v = runFunction(sf.exprFn, nullptr, 0, nullptr, nullptr, error);
             runtime.staticFields[key] = v;
         } else {
             runtime.staticFields[key] = Value{};
@@ -665,7 +666,7 @@ bool BytecodeVM::runModuleInit(const std::string& modulePath, std::string* error
         return false;
     }
     executedModules.insert(modulePath);
-    runFunction(it->second, {}, nullptr, nullptr, error);
+    runFunction(it->second, nullptr, 0, nullptr, nullptr, error);
     return error == nullptr || error->empty();
 }
 
@@ -738,9 +739,9 @@ bool BytecodeVM::execImportString(const std::string& importStr, std::string* err
     return true;
 }
 
-Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& args, std::string* error) {
+Value BytecodeVM::callName(const std::string& name, const Value* args, size_t argCount, std::string* error) {
     if (name == "__bc_import") {
-        if (args.size() != 1 || !std::holds_alternative<std::string>(args[0])) {
+        if (argCount != 1 || !std::holds_alternative<std::string>(args[0])) {
             if (error) *error = "__bc_import expects 1 string arg";
             return Value{};
         }
@@ -756,7 +757,7 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
     if (lIt != runtime.varToLambdaId.end()) {
         auto lit = lambdas.find(lIt->second);
         if (lit != lambdas.end()) {
-            return runFunction(lit->second.functionIndex, args, &lit->second.captures, nullptr, error);
+            return runFunction(lit->second.functionIndex, args, argCount, &lit->second.captures, nullptr, error);
         }
     }
 
@@ -767,7 +768,7 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
             if (possible.rfind("__lambda_", 0) == 0) {
                 auto it = lambdas.find(possible);
                 if (it != lambdas.end()) {
-                    return runFunction(it->second.functionIndex, args, &it->second.captures, nullptr, error);
+                    return runFunction(it->second.functionIndex, args, argCount, &it->second.captures, nullptr, error);
                 }
             }
         }
@@ -801,14 +802,14 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
                 const PropertyCacheEntry& entry = cacheIt->second;
                 if (entry.kind == PropertyCacheEntry::Method && entry.methodIndex != bc::kInvalidIndex) {
                     std::string thisObj = objIt->first;
-                    return runFunction(entry.methodIndex, args, nullptr, &thisObj, error);
+                    return runFunction(entry.methodIndex, args, argCount, nullptr, &thisObj, error);
                 }
                 if (entry.kind == PropertyCacheEntry::Field) {
                     // field offset caching not yet implemented, fall through
                 }
             }
 
-            if (args.empty() && obj->hasField(member)) {
+            if (argCount == 0 && obj->hasField(member)) {
                 // Update cache
                 PropertyCacheEntry entry;
                 entry.kind = PropertyCacheEntry::Field;
@@ -830,7 +831,7 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
                     propertyCache[cacheKey] = entry;
                     // Set this
                     std::string thisObj = objIt->first;
-                    return runFunction(mIt->second.functionIndex, args, nullptr, &thisObj, error);
+                    return runFunction(mIt->second.functionIndex, args, argCount, nullptr, &thisObj, error);
                 }
             }
 
@@ -851,7 +852,7 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
     if (name.find('.') == std::string::npos) {
         auto userFuncIt = userFunctions.find(name);
         if (userFuncIt != userFunctions.end()) {
-            return runFunction(userFuncIt->second, args, nullptr, nullptr, error);
+            return runFunction(userFuncIt->second, args, argCount, nullptr, nullptr, error);
         }
     }
 
@@ -859,20 +860,26 @@ Value BytecodeVM::callName(const std::string& name, const std::vector<Value>& ar
     if (name.find('.') == std::string::npos) {
         for (const auto& pair : runtime.imports) {
             std::string full = pair.second + "." + name;
-            if (FunctionRegistry::instance().exists(full)) return FunctionRegistry::instance().call(full, args);
+            if (FunctionRegistry::instance().exists(full)) {
+                std::vector<Value> argVec(args, args + argCount);
+                return FunctionRegistry::instance().call(full, argVec);
+            }
         }
         runtime.notifyError("call", "Unknown function: " + name, -1, -1, false);
         return Value{};
     }
 
     std::string resolved = runtime.resolveFunctionName(name);
-    if (FunctionRegistry::instance().exists(resolved)) return FunctionRegistry::instance().call(resolved, args);
+    if (FunctionRegistry::instance().exists(resolved)) {
+        std::vector<Value> argVec(args, args + argCount);
+        return FunctionRegistry::instance().call(resolved, argVec);
+    }
 
     runtime.notifyError("call", "Unknown function: " + resolved, -1, -1, false);
     return Value{};
 }
 
-Value BytecodeVM::newObject(const std::string& fullClassName, const std::vector<Value>& args, std::string* error) {
+Value BytecodeVM::newObject(const std::string& fullClassName, const Value* args, size_t argCount, std::string* error) {
     std::string actualClassName = fullClassName;
 
     // qualified new: module.Class
@@ -931,17 +938,17 @@ Value BytecodeVM::newObject(const std::string& fullClassName, const std::vector<
         runtime.pushScope(std::unordered_map<std::string, Value>{});
 
         // bind params (ARC-aware via setVariable)
-        for (size_t i = 0; i < cIt->second.ctorParams.size() && i < args.size(); ++i) {
+        for (size_t i = 0; i < cIt->second.ctorParams.size() && i < argCount; ++i) {
             runtime.setVariable(cIt->second.ctorParams[i], args[i]);
         }
 
         // field initializers
         for (const auto& init : cIt->second.ctorFieldInits) {
-            Value v = runFunction(init.second, {}, nullptr, &runtime.currentThisObject, error);
+            Value v = runFunction(init.second, nullptr, 0, nullptr, &runtime.currentThisObject, error);
             instance->setField(init.first, v);
         }
 
-        runFunction(cIt->second.ctorFunctionIndex, args, nullptr, &runtime.currentThisObject, error);
+        runFunction(cIt->second.ctorFunctionIndex, args, argCount, nullptr, &runtime.currentThisObject, error);
 
         // ARC: Restore scope
         runtime.popScope(savedVars);
@@ -951,7 +958,7 @@ Value BytecodeVM::newObject(const std::string& fullClassName, const std::vector<
     return Value(objId);
 }
 
-Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& args,
+Value BytecodeVM::runFunction(uint32_t functionIndex, const Value* args, size_t argCount,
                               const std::unordered_map<std::string, Value>* overrideVars,
                               const std::string* overrideThis,
                               std::string* error) {
@@ -969,7 +976,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
 #ifdef QZ_JIT_ENABLED
     if (jitEnabled_ && !overrideVars && !overrideThis) {
         Value jitResult;
-        if (tryJITExecute(functionIndex, args, jitResult, error)) {
+        if (tryJITExecute(functionIndex, args, argCount, jitResult, error)) {
             return jitResult;
         }
         // Fall through to interpreter if JIT didn't handle it
@@ -1012,7 +1019,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
     if (overrideThis) runtime.currentThisObject = *overrideThis;
 
     // Bind parameters into runtime.variables (ARC-aware via setVariable)
-    for (size_t i = 0; i < fn.paramNameStrings.size() && i < args.size(); ++i) {
+    for (size_t i = 0; i < fn.paramNameStrings.size() && i < argCount; ++i) {
         runtime.setVariable(str(fn.paramNameStrings[i]), args[i]);
     }
 
@@ -1022,7 +1029,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
     const size_t localsSize = fn.localNameStrings.size();
     locals.resize(localsSize);
     // Initialize param slots if present
-    for (size_t i = 0; i < fn.paramNameStrings.size() && i < args.size(); ++i) {
+    for (size_t i = 0; i < fn.paramNameStrings.size() && i < argCount; ++i) {
         if (i < locals.size()) locals[i] = args[i];
     }
 
@@ -1645,7 +1652,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 callArgs.resize(argc);
                 for (int i = (int)argc - 1; i >= 0; --i) callArgs[(size_t)i] = std::move(pop());
 
-                Value rv = callName(str(nidx), callArgs, error);
+                Value rv = callName(str(nidx), callArgs.data(), callArgs.size(), error);
                 push(std::move(rv));
                 break;
             }
@@ -1668,7 +1675,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 ctorArgs.resize(argc);
                 for (int i = (int)argc - 1; i >= 0; --i) ctorArgs[(size_t)i] = std::move(pop());
 
-                Value obj = newObject(str(nidx), ctorArgs, error);
+                Value obj = newObject(str(nidx), ctorArgs.data(), ctorArgs.size(), error);
                 push(std::move(obj));
                 break;
             }
@@ -1874,7 +1881,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 }
                 
                 std::vector<Value> callArgs;  // Empty for 0-arg call
-                Value rv = callName(str(nidx), callArgs, error);
+                Value rv = callName(str(nidx), callArgs.data(), callArgs.size(), error);
                 push(std::move(rv));
                 break;
             }
@@ -1893,7 +1900,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 std::vector<Value> callArgs;
                 callArgs.reserve(1);
                 callArgs.push_back(std::move(pop()));
-                Value rv = callName(str(nidx), callArgs, error);
+                Value rv = callName(str(nidx), callArgs.data(), callArgs.size(), error);
                 push(std::move(rv));
                 break;
             }
@@ -1914,7 +1921,7 @@ Value BytecodeVM::runFunction(uint32_t functionIndex, const std::vector<Value>& 
                 callArgs.resize(2);
                 callArgs[1] = std::move(pop());
                 callArgs[0] = std::move(pop());
-                Value rv = callName(str(nidx), callArgs, error);
+                Value rv = callName(str(nidx), callArgs.data(), callArgs.size(), error);
                 push(std::move(rv));
                 break;
             }
@@ -2132,14 +2139,14 @@ bool BytecodeVM::run(const bc::Program& program, std::string* error) {
         auto it = lambdas.find(lambdaId);
         if (it == lambdas.end()) return Value{};
         std::string err;
-        return runFunction(it->second.functionIndex, args, &it->second.captures, nullptr, &err);
+        return runFunction(it->second.functionIndex, args.data(), args.size(), &it->second.captures, nullptr, &err);
     });
 
     // Initialize runtime state similarly to interpreter main
     // (extensions are already available via FunctionRegistry setup in main)
 
     try {
-        (void)runFunction(program.entryFunction, {}, nullptr, nullptr, error);
+        (void)runFunction(program.entryFunction, nullptr, 0, nullptr, nullptr, error);
     } catch (const std::exception& ex) {
         if (error) *error = std::string("VM fatal: ") + ex.what();
         runtime.notifyError("vm", error ? *error : std::string("VM fatal"), -1, -1, true);

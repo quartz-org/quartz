@@ -3,6 +3,7 @@
 
 #include "bytecode.h"
 #include "runtime.h"
+#include "vm_optimizations.h"
 
 #include <string>
 #include <unordered_map>
@@ -105,7 +106,7 @@ private:
     std::unordered_map<std::string, PropertyCacheEntry> propertyCache;
 
     // Execution
-    Value runFunction(uint32_t functionIndex, const std::vector<Value>& args,
+    Value runFunction(uint32_t functionIndex, const Value* args, size_t argCount,
                       const std::unordered_map<std::string, Value>* overrideVars,
                       const std::string* overrideThis,
                       std::string* error);
@@ -115,8 +116,8 @@ private:
     Value applyUnary(const Value& operand, bc::UnaryOp op) const;
 
     // Calls / objects
-    Value callName(const std::string& name, const std::vector<Value>& args, std::string* error);
-    Value newObject(const std::string& fullClassName, const std::vector<Value>& args, std::string* error);
+    Value callName(const std::string& name, const Value* args, size_t argCount, std::string* error);
+    Value newObject(const std::string& fullClassName, const Value* args, size_t argCount, std::string* error);
     Value indexGet(const std::string& varName, const Value& indexValue);
     Value indexGet(uint32_t varNameStringIndex, const Value& indexValue);  // Fast path with caching
 
@@ -146,7 +147,7 @@ private:
     uint32_t jitThreshold_ = 100;
     
     // Try to execute function with JIT, returns false if should use interpreter
-    bool tryJITExecute(uint32_t functionIndex, const std::vector<Value>& args,
+    bool tryJITExecute(uint32_t functionIndex, const Value* args, size_t argCount,
                        Value& result, std::string* error);
 };
 
