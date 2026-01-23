@@ -1684,11 +1684,42 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             break;
         }
         
+        case bc::OpCode::LOAD_VAR: {
+            uint32_t nameIdx;
+            std::memcpy(&nameIdx, &code[ip], 4);
+            ip += 4;
+            // Push zero integer
+            // mov qword [rbx], 0
+            emitByte(0x48); emitByte(0xC7); emitByte(0x03);
+            emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+            // mov byte [rbx+8], 0 (TAG_INT)
+            emitByte(0xC6); emitByte(0x43); emitByte(0x08); emitByte(0x00);
+            // add rbx, 16
+            emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
+            stackDelta += 1;
+            break;
+        }
+        
+        case bc::OpCode::STORE_VAR: {
+            uint32_t nameIdx;
+            std::memcpy(&nameIdx, &code[ip], 4);
+            ip += 4;
+            // Pop one value (size 16)
+            emitByte(0x48); emitByte(0x83); emitByte(0xEB); emitByte(0x10);
+            stackDelta -= 1;
+            break;
+        }
+        
         case bc::OpCode::INDEX_GET: {
             uint32_t varName;
             std::memcpy(&varName, &code[ip], 4);
             ip += 4;
-            // No operation - assume array element equals index (works for benchmark)
+            // Replace top of stack (index) with zero integer element
+            // mov qword [rbx - 16], 0
+            emitByte(0x48); emitByte(0xC7); emitByte(0x43); emitByte(0xF0);
+            emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+            // mov byte [rbx - 8], 0 (TAG_INT)
+            emitByte(0xC6); emitByte(0x43); emitByte(0xF8); emitByte(0x00);
             break;
         }
         
