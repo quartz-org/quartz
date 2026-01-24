@@ -51,7 +51,7 @@ namespace qz::jit {
 // =============================================================================
 
 // Default JIT threshold (calls before compilation)
-constexpr uint32_t kDefaultJITThreshold = 10;
+constexpr uint32_t kDefaultJITThreshold = 1;
 
 // Maximum compiled function size (bytes)
 constexpr size_t kMaxCompiledSize = 1024 * 1024;  // 1 MB

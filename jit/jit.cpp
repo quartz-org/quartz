@@ -415,15 +415,29 @@ bool Compiler::canCompile(const bc::Function& fn) {
                 ip += 4;  // u32 varName
                 break;
                 
+            // Array and dict creation
+            case bc::OpCode::DECLARE_ARRAY:
+                ip += 4 + 2;  // u32 varName, u16 length
+                break;
+            case bc::OpCode::DECLARE_DICT: {
+                uint16_t count = static_cast<uint16_t>(code[ip + 4]) | (static_cast<uint16_t>(code[ip + 5]) << 8);
+                ip += 4 + 2 + count * 4;  // u32 varName, u16 count, count * u32 key strings
+                break;
+            }
+            case bc::OpCode::MAKE_ARRAY_EXPR:
+                ip += 2;  // u16 count
+                break;
+            case bc::OpCode::MAKE_DICT_EXPR: {
+                uint16_t count = static_cast<uint16_t>(code[ip]) | (static_cast<uint16_t>(code[ip + 1]) << 8);
+                ip += 2 + count * 4;  // u16 count, count * u32 key strings
+                break;
+            }
+                
             // Unsupported - fall back to interpreter
             // These require runtime support or complex operations
             case bc::OpCode::NEW_OBJECT:
             case bc::OpCode::LOAD_VAR:
             case bc::OpCode::STORE_VAR:
-            case bc::OpCode::DECLARE_ARRAY:
-            case bc::OpCode::DECLARE_DICT:
-            case bc::OpCode::MAKE_ARRAY_EXPR:
-            case bc::OpCode::MAKE_DICT_EXPR:
             case bc::OpCode::DEF_CLASS:
             case bc::OpCode::DEF_INTERFACE:
             case bc::OpCode::TRY_PUSH:
