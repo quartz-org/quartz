@@ -1712,15 +1712,55 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             uint32_t nameIdx;
             std::memcpy(&nameIdx, &code[ip], 4);
             ip += 4;
-            // Push zero integer
-            // mov qword [rbx], 0
-            emitByte(0x48); emitByte(0xC7); emitByte(0x03);
-            emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
-            // mov byte [rbx+8], 0 (TAG_INT)
-            emitByte(0xC6); emitByte(0x43); emitByte(0x08); emitByte(0x00);
-            // add rbx, 16
-            emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
-            stackDelta += 1;
+            
+            // Try to find slot index for this variable name
+            uint16_t slot = UINT16_MAX;
+            for (size_t i = 0; i < fn.localNameStrings.size(); ++i) {
+                if (fn.localNameStrings[i] == nameIdx) {
+                    slot = static_cast<uint16_t>(i);
+                    break;
+                }
+            }
+            
+            if (slot != UINT16_MAX) {
+                // Variable is a local slot - use LOAD_SLOT logic
+                auto it = slotToReg_.find(slot);
+                if (it != slotToReg_.end()) {
+                    // Slot is in XMM register, store it to stack
+                    emitStoreXmmToStack(it->second);
+                } else {
+                    int32_t offset = static_cast<int32_t>(slot) * 16;
+                    
+                    // movdqu xmm0, [r12 + offset]  (load 16-byte JITValue)
+                    emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x6F);
+                    if (offset == 0) {
+                        emitByte(0x04); emitByte(0x24);  // [r12]
+                    } else if (offset <= 127) {
+                        emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+                    } else {
+                        emitByte(0x84); emitByte(0x24);
+                        emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
+                        emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                    }
+                    // movdqu [rbx], xmm0
+                    emitByte(0xF3); emitByte(0x0F); emitByte(0x11); emitByte(0x03);
+                }
+                
+                // add rbx, 16
+                emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
+                stackDelta++;
+            } else {
+                // Global variable - fall back to runtime lookup (placeholder: push zero)
+                // TODO: implement runtime call
+                // mov qword [rbx], 0
+                emitByte(0x48); emitByte(0xC7); emitByte(0x03);
+                emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+                // mov byte [rbx+8], 0 (TAG_INT)
+                emitByte(0xC6); emitByte(0x43); emitByte(0x08); emitByte(0x00);
+                // add rbx, 16
+                emitByte(0x48); emitByte(0x83); emitByte(0xC3); emitByte(0x10);
+                stackDelta++;
+            }
             break;
         }
         
@@ -1728,8 +1768,49 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             uint32_t nameIdx;
             std::memcpy(&nameIdx, &code[ip], 4);
             ip += 4;
-            // Pop one value (size 16)
+            
+            // Try to find slot index for this variable name
+            uint16_t slot = UINT16_MAX;
+            for (size_t i = 0; i < fn.localNameStrings.size(); ++i) {
+                if (fn.localNameStrings[i] == nameIdx) {
+                    slot = static_cast<uint16_t>(i);
+                    break;
+                }
+            }
+            
+            // Pop value from stack (adjust stack pointer)
             emitByte(0x48); emitByte(0x83); emitByte(0xEB); emitByte(0x10);
+            
+            if (slot != UINT16_MAX) {
+                // Variable is a local slot - use STORE_SLOT logic
+                auto it = slotToReg_.find(slot);
+                if (it != slotToReg_.end()) {
+                    // Slot is in XMM register, load value from stack into register and mark dirty
+                    uint8_t xmmReg = it->second;
+                    emitLoadXmmFromStack(xmmReg);
+                    dirtySlots_.insert(slot);
+                    // Do NOT store to memory yet (deferred until flush)
+                } else {
+                    int32_t offset = static_cast<int32_t>(slot) * 16;
+                    // movdqu xmm0, [rbx]  (load 16-byte JITValue from stack)
+                    emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x03);
+                    // movdqu [r12 + offset], xmm0  (store to local)
+                    emitByte(0xF3); emitByte(0x41); emitByte(0x0F); emitByte(0x11);
+                    if (offset == 0) {
+                        emitByte(0x04); emitByte(0x24);  // [r12]
+                    } else if (offset <= 127) {
+                        emitByte(0x44); emitByte(0x24); emitByte(static_cast<uint8_t>(offset));
+                    } else {
+                        emitByte(0x84); emitByte(0x24);
+                        emitByte(offset & 0xFF); emitByte((offset >> 8) & 0xFF);
+                        emitByte((offset >> 16) & 0xFF); emitByte((offset >> 24) & 0xFF);
+                    }
+                }
+            } else {
+                // Global variable - fall back to runtime store (placeholder: just pop)
+                // TODO: implement runtime call
+            }
+            
             stackDelta -= 1;
             break;
         }
