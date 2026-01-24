@@ -233,6 +233,7 @@ private:
     void emitMovMemImm8(int8_t offset, uint8_t imm);
     void emitAddRbxImm8(int8_t imm);
     void emitSubRbxImm8(int8_t imm);
+    void emitSubRbxImm32(int32_t imm);
     void emitLoadLocal(uint16_t slot);
     void emitStoreLocal(uint16_t slot);
     void emitLoadSlotToXmm(uint8_t xmmReg, uint16_t slot);

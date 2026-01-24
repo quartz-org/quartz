@@ -688,6 +688,17 @@ void Compiler::emitSubRbxImm8(int8_t imm) {
     emitByte(static_cast<uint8_t>(imm));
 }
 
+// Emit: sub rbx, imm32
+void Compiler::emitSubRbxImm32(int32_t imm) {
+    emitByte(0x48);  // REX.W
+    emitByte(0x81);  // sub r/m64, imm32
+    emitByte(modrm(3, 5, 3));  // rbx, sub
+    emitByte(imm & 0xFF);
+    emitByte((imm >> 8) & 0xFF);
+    emitByte((imm >> 16) & 0xFF);
+    emitByte((imm >> 24) & 0xFF);
+}
+
 // Emit: mov rax, [r12 + slot*16]  (load from locals)
 void Compiler::emitLoadLocal(uint16_t slot) {
     int32_t offset = static_cast<int32_t>(slot) * 16;
@@ -1624,10 +1635,9 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             if (argc > 0) {
                 int32_t offset = static_cast<int32_t>(argc) * 16;
                 if (offset <= 127) {
-                    emitByte(0x48); emitByte(0x83); emitByte(0xEB); emitByte(static_cast<uint8_t>(offset));
+                    emitSubRbxImm8(static_cast<int8_t>(offset));
                 } else {
-                    // For large argc, use 32-bit offset (not implemented)
-                    return false;
+                    emitSubRbxImm32(offset);
                 }
                 stackDelta -= argc;
             }
