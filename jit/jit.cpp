@@ -1747,6 +1747,15 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
             ip += 8; // u32 nameStringIndex, u32 functionIndex
             break;
 
+        case bc::OpCode::SET_CURRENT_MODULE:
+            // Skip module path string index (u32)
+            ip += 4;
+            break;
+
+        case bc::OpCode::CLEAR_CURRENT_MODULE:
+            // No operand
+            break;
+
         default:
             // Unsupported opcode
             return false;
