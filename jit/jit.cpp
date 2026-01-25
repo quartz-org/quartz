@@ -176,6 +176,15 @@ void Compiler::emitU64(uint64_t v) {
     emitBytes(bytes, 8);
 }
 
+size_t Compiler::emitImm64Placeholder() {
+    // mov rax, imm64 (REX.W + B8 + rd)
+    emitByte(0x48); // REX.W prefix
+    emitByte(0xB8); // MOV rax, imm64
+    size_t offset = emitOffset_;
+    emitU64(0x0); // placeholder immediate
+    return offset;
+}
+
 void Compiler::emitPrologue() {
 #if JIT_ARCH_X86_64
     // System V AMD64 ABI: rdi=stack, rsi=locals, rdx=runtime
