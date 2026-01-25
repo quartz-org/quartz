@@ -852,6 +852,13 @@ void Compiler::flushDirtySlots() {
     dirtySlots_.clear();
 }
 
+uint64_t* Compiler::allocateCacheSlot(size_t ip) {
+    cacheSlots_.push_back(std::numeric_limits<uint64_t>::max());
+    uint64_t* ptr = &cacheSlots_.back();
+    cacheSlotMap_[ip] = reinterpret_cast<uint64_t>(ptr);
+    return ptr;
+}
+
 // Emit: movdqu [rbx], xmmReg  (store XMM register to stack)
 void Compiler::emitStoreXmmToStack(uint8_t xmmReg) {
     // F3 prefix

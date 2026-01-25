@@ -213,6 +213,7 @@ private:
     std::vector<uint16_t> usedSlots_;                   // slots used in function
     std::unordered_set<uint16_t> dirtySlots_;           // slots whose register value differs from memory
     std::unordered_map<size_t, uint64_t> cacheSlotMap_; // IP -> cache slot pointer
+    std::vector<uint64_t> cacheSlots_;                  // storage for cache slots
     // Runtime layout offsets (computed once)
     size_t offsetArrayStorage_;
     size_t arraySlotSize_;
@@ -223,6 +224,7 @@ private:
     // Internal compilation methods
     void analyzeSlotUsage(const bc::Function& fn);
     void flushDirtySlots();
+    uint64_t* allocateCacheSlot(size_t ip);
     void resetEmitState();
     void emitByte(uint8_t b);
     void emitBytes(const uint8_t* data, size_t len);
