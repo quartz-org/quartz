@@ -21,6 +21,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -364,6 +365,57 @@ Value Runtime::makeDict(std::unordered_map<std::string, Value> entries) {
         dictStorage.push_back(DictSlot{std::move(entries), 1});
     }
     return Value(DictRef{dictId});
+}
+
+size_t Runtime::getArrayIdForVarName(const std::string& varName) const {
+    auto it = varToArrayId.find(varName);
+    if (it != varToArrayId.end()) {
+        return it->second;
+    }
+    return std::numeric_limits<size_t>::max();
+}
+
+size_t Runtime::getDictIdForVarName(const std::string& varName) const {
+    auto it = varToDictId.find(varName);
+    if (it != varToDictId.end()) {
+        return it->second;
+    }
+    return std::numeric_limits<size_t>::max();
+}
+
+
+
+Value* Runtime::indexGetForJIT(const std::string& varName, int64_t index) {
+    auto it = varToArrayId.find(varName);
+    if (it != varToArrayId.end()) {
+        return arrayAt(it->second, static_cast<size_t>(index));
+    }
+    auto dictIt = varToDictId.find(varName);
+    if (dictIt != varToDictId.end()) {
+        // dict access not implemented yet
+        return nullptr;
+    }
+    return nullptr;
+}
+
+Value* Runtime::indexGetForJITStub(Runtime* runtime, const std::string* varName, int64_t index) {
+    if (varName) {
+        return runtime->indexGetForJIT(*varName, index);
+    }
+    return nullptr;
+}
+
+Value* Runtime::arrayAtForJITStub(Runtime* runtime, size_t arrayId, int64_t index) {
+    return runtime->arrayAtForJIT(arrayId, static_cast<size_t>(index));
+}
+
+size_t Runtime::indexGetResolveAndPatch(Runtime* runtime, const std::string* varName, uint64_t* cacheSlot) {
+    if (!varName || !cacheSlot) return std::numeric_limits<size_t>::max();
+    size_t arrayId = runtime->getArrayIdForVarName(*varName);
+    if (arrayId != std::numeric_limits<size_t>::max()) {
+        *cacheSlot = arrayId;
+    }
+    return arrayId;
 }
 
 // ============================================================================

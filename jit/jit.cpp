@@ -145,6 +145,11 @@ bool CodeRegion::makeWritable() {
 
 Compiler::Compiler(Runtime& runtime) : runtime_(runtime) {
     emitBuffer_.reserve(4096);
+    // Compute runtime layout offsets (friend access)
+    offsetArrayStorage_ = reinterpret_cast<size_t>(&runtime_.arrayStorage) - reinterpret_cast<size_t>(&runtime_);
+    arraySlotSize_ = sizeof(Runtime::ArraySlot);
+    arraySlotDataOffset_ = offsetof(Runtime::ArraySlot, data);
+    arraySlotRefcountOffset_ = offsetof(Runtime::ArraySlot, refcount);
 }
 
 Compiler::~Compiler() = default;
@@ -358,6 +363,10 @@ bool Compiler::canCompile(const bc::Function& fn) {
             case bc::OpCode::STORE_SLOT:
                 ip += 2;  // u16 slot
                 break;
+            case bc::OpCode::LOAD_VAR:
+            case bc::OpCode::STORE_VAR:
+                ip += 4;  // u32 nameStringIndex
+                break;
             case bc::OpCode::LOAD_SLOT_0:
             case bc::OpCode::STORE_SLOT_0:
                 break;
@@ -436,8 +445,6 @@ bool Compiler::canCompile(const bc::Function& fn) {
             // Unsupported - fall back to interpreter
             // These require runtime support or complex operations
             case bc::OpCode::NEW_OBJECT:
-            case bc::OpCode::LOAD_VAR:
-            case bc::OpCode::STORE_VAR:
             case bc::OpCode::DEF_CLASS:
             case bc::OpCode::DEF_INTERFACE:
             case bc::OpCode::TRY_PUSH:
@@ -859,6 +866,36 @@ void Compiler::emitLoadXmmFromStack(uint8_t xmmReg) {
     emitByte(0x0F);
     emitByte(0x6F); // movdqu xmm, m128
     emitByte((xmmReg & 7) << 3 | 0x03);
+}
+
+// Emit fast path for array access: assumes array ID in rsi, index in rdx, runtime in r13
+// Computes element address and loads 16-byte value into xmm0, stores at [rbx - 16]
+void Compiler::emitArrayGetFastPath(size_t arrayId) {
+    // Compute total offset to data pointer
+    size_t slotOffset = offsetArrayStorage_ + arrayId * arraySlotSize_;
+    size_t dataPtrOffset = slotOffset + arraySlotDataOffset_;
+    // Load data pointer into rax: mov rax, [r13 + dataPtrOffset]
+    emitByte(0x49); // REX.WB (REX.W=1, REX.B=1)
+    emitByte(0x8B); // mov r64, r/m64
+    emitByte(0x85); // modrm: [r13 + disp32] (mod=10, reg=000, r/m=101)
+    // Emit disp32 (little-endian)
+    emitByte(static_cast<uint8_t>(dataPtrOffset & 0xFF));
+    emitByte(static_cast<uint8_t>((dataPtrOffset >> 8) & 0xFF));
+    emitByte(static_cast<uint8_t>((dataPtrOffset >> 16) & 0xFF));
+    emitByte(static_cast<uint8_t>((dataPtrOffset >> 24) & 0xFF));
+    // Multiply index (rdx) by 16 (shift left 4)
+    emitByte(0x48); // REX.W
+    emitByte(0xC1); // shl r/m64, imm8
+    emitByte(0xE2); // modrm: shl rdx, 4
+    emitByte(0x04);
+    // Add to data pointer: add rax, rdx
+    emitByte(0x48); // REX.W
+    emitByte(0x01); // add r/m64, r64
+    emitByte(0xD0); // modrm: rax, rdx
+    // Load 16-byte value into xmm0: movdqu xmm0, [rax]
+    emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x00);
+    // Store xmm0 at [rbx - 16]
+    emitByte(0xF3); emitByte(0x0F); emitByte(0x7F); emitByte(0x43); emitByte(0xF0);
 }
 
 #endif // JIT_ARCH_X86_64
@@ -1816,15 +1853,29 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
         }
         
         case bc::OpCode::INDEX_GET: {
-            uint32_t varName;
-            std::memcpy(&varName, &code[ip], 4);
+            uint32_t varNameIdx;
+            std::memcpy(&varNameIdx, &code[ip], 4);
             ip += 4;
-            // Replace top of stack (index) with zero integer element
-            // mov qword [rbx - 16], 0
-            emitByte(0x48); emitByte(0xC7); emitByte(0x43); emitByte(0xF0);
-            emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
-            // mov byte [rbx - 8], 0 (TAG_INT)
-            emitByte(0xC6); emitByte(0x43); emitByte(0xF8); emitByte(0x00);
+            const std::string& varName = program.strings[varNameIdx];
+            
+            // Try to resolve array ID at compile time
+            auto arrayIt = runtime_.varToArrayId.find(varName);
+            if (arrayIt != runtime_.varToArrayId.end()) {
+                size_t arrayId = arrayIt->second;
+                // Fast path: direct memory access using cached offsets
+                // Load index integer from [rbx - 16] into rdx
+                emitByte(0x48); emitByte(0x8B); emitByte(0x53); emitByte(0xF0);
+                // Emit fast path for array access
+                emitArrayGetFastPath(arrayId);
+            } else {
+                // Slow path: fall back to placeholder (to be replaced with inline caching)
+                // Replace top of stack (index) with zero integer element
+                // mov qword [rbx - 16], 0
+                emitByte(0x48); emitByte(0xC7); emitByte(0x43); emitByte(0xF0);
+                emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+                // mov byte [rbx - 8], 0 (TAG_INT)
+                emitByte(0xC6); emitByte(0x43); emitByte(0xF8); emitByte(0x00);
+            }
             break;
         }
         

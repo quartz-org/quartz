@@ -31,6 +31,14 @@ public:
 
     bool run(const bc::Program& program, std::string* error);
 
+    // Container cache for fast index operations (exposed to JIT)
+    struct ContainerCacheEntry {
+        enum Kind : uint8_t { None = 0, Array = 1, Dict = 2 } kind = None;
+        size_t id = 0;
+    };
+    const std::unordered_map<uint32_t, ContainerCacheEntry>& getIndexContainerCache() const { return indexContainerCache; }
+    void setIndexContainerCache(std::unordered_map<uint32_t, ContainerCacheEntry> cache) { indexContainerCache = std::move(cache); }
+
 private:
     Runtime& runtime;
 
@@ -86,10 +94,6 @@ private:
     // ========================================================================
     // Caches resolved varName -> (kind, id) to avoid repeated string hashing
     // in tight loops. Cleared at function entry.
-    struct ContainerCacheEntry {
-        enum Kind : uint8_t { None = 0, Array = 1, Dict = 2 } kind = None;
-        size_t id = 0;
-    };
     std::unordered_map<uint32_t, ContainerCacheEntry> indexContainerCache;
 
     // ========================================================================

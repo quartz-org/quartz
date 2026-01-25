@@ -505,6 +505,7 @@ Value BytecodeVM::indexGet(uint32_t varNameStringIndex, const Value& indexValue)
     return Value{};
 }
 
+
 bool BytecodeVM::execDefInterface(const std::vector<uint8_t>& code, size_t& ip, std::string* error) {
     bool ok = true;
     uint32_t nameIdx = readU32(code, ip, &ok);

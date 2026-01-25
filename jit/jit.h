@@ -212,6 +212,12 @@ private:
     std::unordered_map<uint8_t, uint16_t> regToSlot_;   // register index -> slot
     std::vector<uint16_t> usedSlots_;                   // slots used in function
     std::unordered_set<uint16_t> dirtySlots_;           // slots whose register value differs from memory
+    std::unordered_map<size_t, uint64_t> cacheSlotMap_; // IP -> cache slot pointer
+    // Runtime layout offsets (computed once)
+    size_t offsetArrayStorage_;
+    size_t arraySlotSize_;
+    size_t arraySlotRefcountOffset_;
+    size_t arraySlotDataOffset_;
 
     
     // Internal compilation methods
@@ -221,6 +227,7 @@ private:
     void emitByte(uint8_t b);
     void emitBytes(const uint8_t* data, size_t len);
     void emitU64(uint64_t v);
+    size_t emitImm64Placeholder(); // emits mov rax, 0x0 and returns offset of immediate
     void emitPrologue();
     void emitEpilogue();
     
@@ -241,6 +248,9 @@ private:
     void emitLoadHotSlots();
     void emitStoreXmmToStack(uint8_t xmmReg);
     void emitLoadXmmFromStack(uint8_t xmmReg);
+    
+    // Array fast path helpers
+    void emitArrayGetFastPath(size_t arrayId);
     
     // Opcode compilation
     bool compileOpcode(const bc::Function& fn, const bc::Program& program,

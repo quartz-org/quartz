@@ -20,6 +20,8 @@
 class ObjectInstance;
 using ObjectInstancePtr = std::shared_ptr<ObjectInstance>;
 
+namespace qz { namespace jit { class Compiler; } }
+
 // ============================================================================
 // Runtime Exceptions
 // ============================================================================
@@ -154,6 +156,7 @@ enum class RuntimeState { IDLE, EXECUTING, HALTED, COMPLETED };
 
 class Runtime {
     friend class BytecodeVM;
+    friend class qz::jit::Compiler;
 public:
     Runtime() : state(RuntimeState::IDLE), threadPoolShutdown(false) {}
     ~Runtime();  // Destructor to clean up thread pool
@@ -220,6 +223,18 @@ public:
 
     Value makeArray(std::vector<Value> elements);
     Value makeDict(std::unordered_map<std::string, Value> entries);
+
+    // JIT helper for fast array/dict access
+    Value* indexGetForJIT(const std::string& varName, int64_t index);
+    static Value* indexGetForJITStub(Runtime* runtime, const std::string* varName, int64_t index);
+    static Value* arrayAtForJITStub(Runtime* runtime, size_t arrayId, int64_t index);
+    static size_t indexGetResolveAndPatch(Runtime* runtime, const std::string* varName, uint64_t* cacheSlot);
+
+    // Fast path helpers for JIT inline caching
+    size_t getArrayIdForVarName(const std::string& varName) const;
+    size_t getDictIdForVarName(const std::string& varName) const;
+    inline Value* arrayAtForJIT(size_t arrayId, size_t index) noexcept { return arrayAt(arrayId, index); }
+    inline const Value* arrayAtForJIT(size_t arrayId, size_t index) const noexcept { return arrayAt(arrayId, index); }
 
     // ------------------------------------------------------------------------
     // Task helpers (async background work)
