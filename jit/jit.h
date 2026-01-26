@@ -162,6 +162,7 @@ struct CompiledFunction {
     size_t codeSize = 0;
     uint32_t functionIndex = 0;
     bool isValid = false;
+    std::vector<uint64_t> cacheSlots; // persistent cache slots for IC
     
     JITFunction getEntryPoint() const {
         return reinterpret_cast<JITFunction>(code.data());
@@ -212,11 +213,14 @@ private:
     std::unordered_map<uint8_t, uint16_t> regToSlot_;   // register index -> slot
     std::vector<uint16_t> usedSlots_;                   // slots used in function
     std::unordered_set<uint16_t> dirtySlots_;           // slots whose register value differs from memory
-    std::unordered_map<size_t, uint64_t> cacheSlotMap_; // IP -> cache slot pointer
+    std::unordered_map<size_t, size_t> cacheSlotMap_; // IP -> cache slot index
     std::vector<uint64_t> cacheSlots_;                  // storage for cache slots
+    std::unordered_map<size_t, size_t> cacheSlotPlaceholders_; // slot index -> placeholder offset in emitted code (first mov rax)
+    std::unordered_map<size_t, size_t> cacheSlotAddressPlaceholders_; // slot index -> placeholder offset for slot address (second mov rdx)
     // Runtime layout offsets (computed once)
     size_t offsetArrayStorage_;
     size_t arraySlotSize_;
+    size_t arraySlotShift_;       // log2(arraySlotSize_) if power of two, else 0
     size_t arraySlotRefcountOffset_;
     size_t arraySlotDataOffset_;
 
@@ -224,7 +228,8 @@ private:
     // Internal compilation methods
     void analyzeSlotUsage(const bc::Function& fn);
     void flushDirtySlots();
-    uint64_t* allocateCacheSlot(size_t ip);
+    size_t allocateCacheSlot(size_t ip);
+    void emitCacheSlotPlaceholder(size_t slotIndex);
     void resetEmitState();
     void emitByte(uint8_t b);
     void emitBytes(const uint8_t* data, size_t len);
@@ -253,6 +258,7 @@ private:
     
     // Array fast path helpers
     void emitArrayGetFastPath(size_t arrayId);
+    void emitArrayGetFastPathFromReg(uint8_t reg);
     
     // Opcode compilation
     bool compileOpcode(const bc::Function& fn, const bc::Program& program,

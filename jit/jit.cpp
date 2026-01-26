@@ -148,6 +148,12 @@ Compiler::Compiler(Runtime& runtime) : runtime_(runtime) {
     // Compute runtime layout offsets (friend access)
     offsetArrayStorage_ = reinterpret_cast<size_t>(&runtime_.arrayStorage) - reinterpret_cast<size_t>(&runtime_);
     arraySlotSize_ = sizeof(Runtime::ArraySlot);
+    arraySlotShift_ = 0;
+    size_t size = arraySlotSize_;
+    while (size > 1 && (size & 1) == 0) {
+        arraySlotShift_++;
+        size >>= 1;
+    }
     arraySlotDataOffset_ = offsetof(Runtime::ArraySlot, data);
     arraySlotRefcountOffset_ = offsetof(Runtime::ArraySlot, refcount);
 }
@@ -158,6 +164,10 @@ void Compiler::resetEmitState() {
     emitBuffer_.clear();
     emitOffset_ = 0;
     labels_.clear();
+    cacheSlotMap_.clear();
+    cacheSlots_.clear();
+    cacheSlotPlaceholders_.clear();
+    cacheSlotAddressPlaceholders_.clear();
 }
 
 void Compiler::emitByte(uint8_t b) {
@@ -852,11 +862,20 @@ void Compiler::flushDirtySlots() {
     dirtySlots_.clear();
 }
 
-uint64_t* Compiler::allocateCacheSlot(size_t ip) {
-    cacheSlots_.push_back(std::numeric_limits<uint64_t>::max());
-    uint64_t* ptr = &cacheSlots_.back();
-    cacheSlotMap_[ip] = reinterpret_cast<uint64_t>(ptr);
-    return ptr;
+size_t Compiler::allocateCacheSlot(size_t ip) {
+    size_t slotIndex = cacheSlots_.size();
+    cacheSlots_.push_back(std::numeric_limits<uint64_t>::max()); // sentinel
+    cacheSlots_.push_back(0); // resolved pointer placeholder
+    cacheSlotMap_[ip] = slotIndex;
+    return slotIndex;
+}
+
+void Compiler::emitCacheSlotPlaceholder(size_t slotIndex) {
+    // Record placeholder offset for later patching
+    size_t placeholderOffset = emitOffset_;
+    cacheSlotPlaceholders_[slotIndex] = placeholderOffset;
+    // Emit 8-byte zero placeholder (will be patched to absolute address of cache slot)
+    emitU64(0);
 }
 
 // Emit: movdqu [rbx], xmmReg  (store XMM register to stack)
@@ -899,6 +918,64 @@ void Compiler::emitArrayGetFastPath(size_t arrayId) {
     emitByte(static_cast<uint8_t>((dataPtrOffset >> 8) & 0xFF));
     emitByte(static_cast<uint8_t>((dataPtrOffset >> 16) & 0xFF));
     emitByte(static_cast<uint8_t>((dataPtrOffset >> 24) & 0xFF));
+    // Multiply index (rdx) by 16 (shift left 4)
+    emitByte(0x48); // REX.W
+    emitByte(0xC1); // shl r/m64, imm8
+    emitByte(0xE2); // modrm: shl rdx, 4
+    emitByte(0x04);
+    // Add to data pointer: add rax, rdx
+    emitByte(0x48); // REX.W
+    emitByte(0x01); // add r/m64, r64
+    emitByte(0xD0); // modrm: rax, rdx
+    // Load 16-byte value into xmm0: movdqu xmm0, [rax]
+    emitByte(0xF3); emitByte(0x0F); emitByte(0x6F); emitByte(0x00);
+    // Store xmm0 at [rbx - 16]
+    emitByte(0xF3); emitByte(0x0F); emitByte(0x7F); emitByte(0x43); emitByte(0xF0);
+}
+
+// Emit fast path for array access where array ID is in a register (0=rax,1=rcx,2=rdx,3=rbx,4=rsp,5=rbp,6=rsi,7=rdi)
+// Index must be in rdx, runtime in r13
+void Compiler::emitArrayGetFastPathFromReg(uint8_t reg) {
+    // Multiply array ID by arraySlotSize_
+    if (arraySlotShift_ != 0) {
+        // shift left by arraySlotShift_
+        // shl reg, arraySlotShift_
+        emitByte(0x48); // REX.W
+        emitByte(0xC1); // shl r/m64, imm8
+        emitByte(0xE0 + reg); // modrm: shl reg, 4
+        emitByte(static_cast<uint8_t>(arraySlotShift_));
+    } else {
+        // imul reg, arraySlotSize_
+        emitByte(0x48); // REX.W
+        emitByte(0x69); // imul r64, r/m64, imm32
+        emitByte(0xC0 + (reg << 3) + reg); // modrm: reg as both destination and source
+        emitByte(static_cast<uint8_t>(arraySlotSize_ & 0xFF));
+        emitByte(static_cast<uint8_t>((arraySlotSize_ >> 8) & 0xFF));
+        emitByte(static_cast<uint8_t>((arraySlotSize_ >> 16) & 0xFF));
+        emitByte(static_cast<uint8_t>((arraySlotSize_ >> 24) & 0xFF));
+    }
+    // Add offsetArrayStorage_ to reg
+    emitByte(0x48); // REX.W
+    emitByte(0x81); // add r/m64, imm32
+    emitByte(0xC0 + reg); // modrm: add to reg
+    emitByte(static_cast<uint8_t>(offsetArrayStorage_ & 0xFF));
+    emitByte(static_cast<uint8_t>((offsetArrayStorage_ >> 8) & 0xFF));
+    emitByte(static_cast<uint8_t>((offsetArrayStorage_ >> 16) & 0xFF));
+    emitByte(static_cast<uint8_t>((offsetArrayStorage_ >> 24) & 0xFF));
+    // Now reg holds offset to ArraySlot within runtime
+    // Load data pointer into rax: mov rax, [r13 + reg]
+    // REX.WB (REX.W=1, REX.B=1 for r13), plus REX.X if reg >= 8 (ignore)
+    uint8_t rex = 0x48; // REX.W
+    if (reg >= 8) rex |= 0x04; // REX.X (index high bit)
+    rex |= 0x01; // REX.B for r13
+    emitByte(rex);
+    emitByte(0x8B); // mov r64, r/m64
+    // modrm: mod=01 (disp8), reg=000 (rax), r/m=4 (SIB)
+    emitByte(0x44); // 01 000 100
+    // SIB: scale=00, index=reg, base=r13
+    emitByte((reg & 7) << 3 | 0x05); // base = r13 (101)
+    // disp8 = 0
+    emitByte(0x00);
     // Multiply index (rdx) by 16 (shift left 4)
     emitByte(0x48); // REX.W
     emitByte(0xC1); // shl r/m64, imm8
@@ -1884,13 +1961,62 @@ bool Compiler::compileOpcode(const bc::Function& fn, const bc::Program& program,
                 // Emit fast path for array access
                 emitArrayGetFastPath(arrayId);
             } else {
-                // Slow path: fall back to placeholder (to be replaced with inline caching)
-                // Replace top of stack (index) with zero integer element
-                // mov qword [rbx - 16], 0
-                emitByte(0x48); emitByte(0xC7); emitByte(0x43); emitByte(0xF0);
+                // Inline caching: allocate cache slot
+                size_t slotIndex = allocateCacheSlot(ip - 1);
+                size_t placeholderOffset = emitOffset_;
+                cacheSlotPlaceholders_[slotIndex] = placeholderOffset;
+                // mov rax, slot address placeholder (will be patched later)
+                emitByte(0x48); emitByte(0xB8); // mov rax, imm64
+                emitU64(0); // placeholder for slot address
+                // mov rsi, [rax] ; load sentinel
+                emitByte(0x48); emitByte(0x8B); emitByte(0x30); // mov rsi, [rax]
+                // cmp rsi, max sentinel
+                emitByte(0x48); emitByte(0x81); emitByte(0xFE); // cmp rsi, imm32
+                emitU64(std::numeric_limits<uint64_t>::max()); // immediate max (64-bit)
+                // je slow_path
+                size_t labelIdSlow = ip; // unique label ID
+                createLabel(labelIdSlow);
+                emitByte(0x0F); emitByte(0x84); // JE rel32
+                labels_[labelIdSlow].patchSites.push_back(emitOffset_);
                 emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
-                // mov byte [rbx - 8], 0 (TAG_INT)
-                emitByte(0xC6); emitByte(0x43); emitByte(0xF8); emitByte(0x00);
+                // fast path: load index into rdx
+                emitByte(0x48); emitByte(0x8B); emitByte(0x53); emitByte(0xF0); // mov rdx, [rbx - 16]
+                // emit array get fast path using rsi as arrayId (already loaded)
+                emitArrayGetFastPathFromReg(6); // rsi = reg 6
+                // jmp after slow path
+                size_t labelIdAfter = ip + 1;
+                createLabel(labelIdAfter);
+                emitByte(0xE9); // JMP rel32
+                labels_[labelIdAfter].patchSites.push_back(emitOffset_);
+                emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+                // slow_path:
+                resolveLabel(labelIdSlow);
+                // Prepare arguments for indexGetResolveAndPatch
+                // rdi = runtime (r13)
+                emitByte(0x4C); emitByte(0x89); emitByte(0xEF); // mov rdi, r13
+                // rsi = varName pointer
+                uint64_t varNamePtr = reinterpret_cast<uint64_t>(&program.strings[varNameIdx]);
+                emitByte(0x48); emitByte(0xBE); // mov rsi, imm64
+                emitU64(varNamePtr);
+                // rdx = cache slot pointer (slot address)
+                // we will embed placeholder again; reuse same placeholder offset? we'll patch later.
+                size_t slotAddrPlaceholderOffset = emitOffset_;
+                cacheSlotAddressPlaceholders_[slotIndex] = slotAddrPlaceholderOffset;
+                emitByte(0x48); emitByte(0xBA); // mov rdx, imm64
+                emitU64(0);
+                // call indexGetResolveAndPatch
+                uint64_t funcAddr = reinterpret_cast<uint64_t>(&Runtime::indexGetResolveAndPatch);
+                emitByte(0x48); emitByte(0xB8); // mov rax, imm64
+                emitU64(funcAddr);
+                emitByte(0xFF); emitByte(0xD0); // call rax
+                // result arrayId in rax, move to rsi
+                emitByte(0x48); emitByte(0x89); emitByte(0xC6); // mov rsi, rax
+                // load index into rdx (still at [rbx - 16])
+                emitByte(0x48); emitByte(0x8B); emitByte(0x53); emitByte(0xF0); // mov rdx, [rbx - 16]
+                // fast path
+                emitArrayGetFastPathFromReg(6);
+                // after label
+                resolveLabel(labelIdAfter);
             }
             break;
         }
@@ -2002,7 +2128,20 @@ CompiledFunction* Compiler::compile(const bc::Program& program, uint32_t functio
     // Copy code
     std::memcpy(compiled->code.data(), emitBuffer_.data(), emitOffset_);
     compiled->codeSize = emitOffset_;
-    
+
+    // Copy cache slots to compiled function
+    compiled->cacheSlots = cacheSlots_;
+
+    // Patch placeholder immediates with absolute addresses of cache slots
+    for (const auto& [slotIndex, placeholderOffset] : cacheSlotPlaceholders_) {
+        uint64_t slotAddr = reinterpret_cast<uint64_t>(&compiled->cacheSlots[slotIndex * 2]);
+        std::memcpy(compiled->code.data() + placeholderOffset, &slotAddr, 8);
+    }
+    for (const auto& [slotIndex, placeholderOffset] : cacheSlotAddressPlaceholders_) {
+        uint64_t slotAddr = reinterpret_cast<uint64_t>(&compiled->cacheSlots[slotIndex * 2]);
+        std::memcpy(compiled->code.data() + placeholderOffset, &slotAddr, 8);
+    }
+
     // Make executable
     if (!compiled->code.makeExecutable()) {
         return nullptr;

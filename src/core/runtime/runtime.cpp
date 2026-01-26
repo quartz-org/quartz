@@ -384,6 +384,11 @@ size_t Runtime::getDictIdForVarName(const std::string& varName) const {
 }
 
 
+Value* Runtime::resolveFunctionForJIT(const std::string& name) {
+    // TODO: implement actual function lookup
+    return nullptr;
+}
+
 
 Value* Runtime::indexGetForJIT(const std::string& varName, int64_t index) {
     auto it = varToArrayId.find(varName);
@@ -409,13 +414,42 @@ Value* Runtime::arrayAtForJITStub(Runtime* runtime, size_t arrayId, int64_t inde
     return runtime->arrayAtForJIT(arrayId, static_cast<size_t>(index));
 }
 
+// Helper to invalidate instruction cache for a region
+static inline void invalidateInstructionCache(void* start, size_t size) {
+#if defined(__aarch64__) || defined(__arm64__)
+    // ARM64 requires explicit cache invalidation
+    __builtin___clear_cache((char*)start, (char*)start + size);
+#else
+    // x86-64: I-cache is coherent, but we keep a memory barrier for safety
+    asm volatile("" ::: "memory");
+#endif
+}
+
 size_t Runtime::indexGetResolveAndPatch(Runtime* runtime, const std::string* varName, uint64_t* cacheSlot) {
     if (!varName || !cacheSlot) return std::numeric_limits<size_t>::max();
     size_t arrayId = runtime->getArrayIdForVarName(*varName);
     if (arrayId != std::numeric_limits<size_t>::max()) {
-        *cacheSlot = arrayId;
+        // cacheSlot[0] = cached arrayId
+        // cacheSlot[1] = patch address (optional, zero if not used)
+        cacheSlot[0] = arrayId;
+        if (cacheSlot[1] != 0) {
+            uint8_t* patchAddr = reinterpret_cast<uint8_t*>(cacheSlot[1]);
+            // Ensure the region is writable (should already be, but we'll be safe)
+            // Write the 64-bit arrayId into the immediate
+            *reinterpret_cast<uint64_t*>(patchAddr) = arrayId;
+            // Invalidate instruction cache for the patched instruction
+            invalidateInstructionCache(patchAddr, sizeof(uint64_t));
+        }
     }
     return arrayId;
+}
+
+uint64_t Runtime::resolveFunctionForJIT(Runtime* runtime, const std::string* name, uint64_t* cacheSlot) {
+    if (!name || !cacheSlot) return 0;
+    // TODO: implement actual function resolution
+    static uint64_t dummyFunc = 0xdeadbeef;
+    *cacheSlot = dummyFunc;
+    return dummyFunc;
 }
 
 // ============================================================================

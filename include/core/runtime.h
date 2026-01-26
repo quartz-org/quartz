@@ -229,10 +229,12 @@ public:
     static Value* indexGetForJITStub(Runtime* runtime, const std::string* varName, int64_t index);
     static Value* arrayAtForJITStub(Runtime* runtime, size_t arrayId, int64_t index);
     static size_t indexGetResolveAndPatch(Runtime* runtime, const std::string* varName, uint64_t* cacheSlot);
+    static uint64_t resolveFunctionForJIT(Runtime* runtime, const std::string* name, uint64_t* cacheSlot);
 
     // Fast path helpers for JIT inline caching
     size_t getArrayIdForVarName(const std::string& varName) const;
     size_t getDictIdForVarName(const std::string& varName) const;
+    Value* resolveFunctionForJIT(const std::string& name);
     inline Value* arrayAtForJIT(size_t arrayId, size_t index) noexcept { return arrayAt(arrayId, index); }
     inline const Value* arrayAtForJIT(size_t arrayId, size_t index) const noexcept { return arrayAt(arrayId, index); }
 
